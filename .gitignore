@@ -1,0 +1,7 @@
+git-API-key.txt
+*.rpm
+sha256*
+tree.txt
+RHSA*/
+RHBA*/
+RH[BS]A*.html
