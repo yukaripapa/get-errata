@@ -59,8 +59,7 @@ mkdir -p $output_dir/SRPM
 mkdir -p $output_dir/x86_64
 mv *.src.rpm $output_dir/SRPM
 mv *.rpm $output_dir/x86_64
-mv sha256* $output_dir/
-tree $output_dir >$output_dir/tree.txt
+tree >${output_dir}-tree.txt
 
 
 
