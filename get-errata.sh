@@ -6,6 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
+VERSION="2.0.2"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -51,4 +52,15 @@ if [ -n "$result" ]; then
 else
   echo "正常にダウンロードされました"
 fi
+# ディレクトリを作成しrpm格納する
+# ディレクトリ名の取り出し
+output_dir="${file_name%.*}"
+mkdir -p $output_dir/SRPM
+mkdir -p $output_dir/x86_64
+mv *.src.rpm $output_dir/SRPM
+mv *.rpm $output_dir/x86_64
+mv sha256* $output_dir/
+tree $output_dir >$output_dir/tree.txt
+
+
 
