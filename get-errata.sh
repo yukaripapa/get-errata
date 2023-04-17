@@ -37,7 +37,7 @@ egrep -m 1 -A 400 "^.h2.Red Hat Enterprise Linux.*(x86_64|AUS)" $file_name | gre
 # 将来パッケージ数の増加に対応できるようにした。(product B欄は IBMzなので２番目のgrepで除外される。)
 #
 # ダウンロードスクリプトの実行
-sh $sh_filename
+#sh $sh_filename
 sha256sum *rpm >sha256sum.txt
 # ダウンロードしたrpmの数を数えておく27以下だと失敗しているかも。
 wc sha256sum.txt
@@ -59,7 +59,7 @@ mkdir -p $output_dir/SRPM
 mkdir -p $output_dir/x86_64
 mv *.src.rpm $output_dir/SRPM
 mv *.rpm $output_dir/x86_64
-tree >${output_dir}-tree.txt
+tree $output_dir/ >${output_dir}-tree.txt
 
 
 
