@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
-VERSION="3.0.2"
+VERSION="3.0.4"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -121,6 +121,12 @@ mkdir -p $output_dir/SRPM
 mkdir -p $output_dir/x86_64
 mv *.src.rpm $output_dir/SRPM
 mv *.rpm $output_dir/x86_64
+#
+# ダウンロード不要パッケージを削除する。
+#
+# kernel-tools-libs-devel
+du -a $output_dir/ | grep kernel-tools-libs-devel | gawk '{print "rm " $2}' | sh
+# treeを取得する。
 tree $output_dir/ >${output_dir}-tree.txt
 
 
