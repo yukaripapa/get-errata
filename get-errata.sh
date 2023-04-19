@@ -62,7 +62,7 @@ file_name=$1
 sh_filename="${file_name%.*}.sh"
 #
 # ダウンロードするアーキテクチャ毎の設定
-# デフォルト x86_64
+# デフォルト x86_64（i686も含む）
 echo $opt_aarch64
 if [ "$opt_aarch64" = "True"  ]; then
     # aarch64の場合のダウンロード
@@ -73,7 +73,7 @@ if [ "$opt_aarch64" = "True"  ]; then
 else
     # （その他）x86_64の場合のダウンロード
     product_pattern="^.h2.Red Hat Enterprise Linux.*(x86_64|AUS|(Extended Life Cycle Support)|(Server 7))"
-    rpm_pattern="src.rpm\|x86_64\|noarch"
+    rpm_pattern="src.rpm\|x86_64\|i686\|noarch"
 fi
 
 # デバッグ機能
