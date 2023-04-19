@@ -32,7 +32,7 @@ VERSION="3.0.4"
 # オプションの取得
 # -a aarch64のダウンロードを行う. デフォルトは x86_64
 # -n No Download. ダウンロードスクリプトの実行はせず、その他を実行する。（チェックサムの確認等）
-while getopts "anhx" opt; do
+while getopts "anhxv" opt; do
   case $opt in
    a) opt_aarch64='True'
        echo "option -a specified"
@@ -42,7 +42,10 @@ while getopts "anhx" opt; do
        ;;
    n) opt_no_download='True'
       echo "option -n specified"
-      ;;
+       ;;
+   v) echo "version $VERSION"
+       exit 0
+       ;;
    h) echo "Usage bash -x get-errata.sh [options] <errata-webpage.html>"
        echo ""
        echo "Options:"
