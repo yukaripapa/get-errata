@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
-VERSION="3.0.4"
+VERSION="3.12"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -120,10 +120,33 @@ fi
 # ディレクトリを作成しrpm格納する
 # ディレクトリ名の取り出し
 output_dir="${file_name%.*}"
+# ソースコードの格納
 mkdir -p $output_dir/SRPM
-mkdir -p $output_dir/x86_64
 mv *.src.rpm $output_dir/SRPM
-mv *.rpm $output_dir/x86_64
+if [ "$opt_aarch64" = "True"  ]; then
+    # ARMの場合は aarch64へ格納
+    mkdir -p $output_dir/aarch64
+    mv *.rpm $output_dir/aarch64
+elif ls *.i686.rpm >/dev/null 2>&1; then 
+    # x86_64(i686含む)の場合はx86_64へ格納    
+    echo "i686.rpm existing"
+    mkdir -p $output_dir/x86_64
+    mkdir -p $output_dir/i686
+    mv *i686.rpm $output_dir/i686
+    cp *noarch.rpm $output_dir/i686
+    mv *.rpm $output_dir/x86_64
+    # 以下の6つのpkgを x86_64フォルダーにコピーする
+    cp $output_dir/i686/kernel-debug-debuginfo-*.i686.rpm $output_dir/x86_64
+    cp $output_dir/i686/kernel-debug-devel-*.el6.i686.rpm $output_dir/x86_64
+    cp $output_dir/i686/kernel-debuginfo-*.i686.rpm $output_dir/x86_64
+    cp $output_dir/i686/kernel-debuginfo-common-*.el6.i686.rpm $output_dir/x86_64
+    cp $output_dir/i686/perf-debuginfo-*.i686.rpm $output_dir/x86_64
+    cp $output_dir/i686/python-perf-debuginfo-*.i686.rpm $output_dir/x86_64
+else
+    # x86_64の場合はx86_64へ格納    
+    mkdir -p $output_dir/x86_64
+    mv *.rpm $output_dir/x86_64
+fi
 #
 # ダウンロード不要パッケージを削除する。
 #
