@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
-VERSION="3.12"
+VERSION="3.13"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -154,6 +154,7 @@ fi
 du -a $output_dir/ | grep kernel-tools-libs-devel | gawk '{print "rm " $2}' | sh
 # treeを取得する。
 tree $output_dir/ >${output_dir}-tree.txt
+md5sum $output_dir/*/*.rpm >${output_dir}-md5sum.txt
 
 
 
