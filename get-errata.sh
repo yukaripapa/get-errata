@@ -140,8 +140,8 @@ if [ "$opt_aarch64" = "True"  ]; then
     # ARMの場合は aarch64へ格納
     mkdir -p $output_dir/aarch64
     mv *.rpm $output_dir/aarch64
-elif ls *.i686.rpm >/dev/null 2>&1; then 
-    # x86_64(i686含む)の場合はx86_64へ格納    
+elif ls kernel*.i686.rpm >/dev/null 2>&1; then 
+    # x86_64(i686含む)の場合はx86_64/i686へ分けて格納    
     echo "i686.rpm existing"
     mkdir -p $output_dir/x86_64
     mkdir -p $output_dir/i686
@@ -156,7 +156,7 @@ elif ls *.i686.rpm >/dev/null 2>&1; then
     cp $output_dir/i686/perf-debuginfo-*.i686.rpm $output_dir/x86_64
     cp $output_dir/i686/python-perf-debuginfo-*.i686.rpm $output_dir/x86_64
 else
-    # x86_64の場合はx86_64へ格納    
+    # それ以外のx86_64の場合はx86_64へまとめて格納    
     mkdir -p $output_dir/x86_64
     mv *.rpm $output_dir/x86_64
 fi
