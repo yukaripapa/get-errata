@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
-VERSION="3.13"
+VERSION="3.15"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -32,28 +32,41 @@ VERSION="3.13"
 # オプションの取得
 # -a aarch64のダウンロードを行う. デフォルトは x86_64
 # -n No Download. ダウンロードスクリプトの実行はせず、その他を実行する。（チェックサムの確認等）
+help_txt="
+Usage bash -x get-errata.sh [options] errata-webpage.html
+
+version=$VERSION
+Options:
+  -h help
+  -a aarch64
+  -n No Download. (just re-generate checksums.)
+"
+
+if [ $# -eq 0 ]; then
+  echo -e "$help_txt"
+  exit 0
+fi
+
 while getopts "anhxv" opt; do
   case $opt in
    a) opt_aarch64='True'
-       echo "option -a specified"
+      echo "option -a specified"
        ;;
    x) opt_x86_64='True'
-       echo "option -x specified"
+      echo "option -x specified"
        ;;
    n) opt_no_download='True'
       echo "option -n specified"
        ;;
    v) echo "version $VERSION"
-       exit 0
+      exit 0
        ;;
-   h) echo "Usage bash -x get-errata.sh [options] <errata-webpage.html>"
-       echo ""
-       echo "Options:"
-       echo "-n No Download."
-       echo "-a aarch64"       
-       exit 0
+   h) echo -e "$help_txt"
+      exit 0
        ;;
-    \?) echo "Invalid option -$OPTARG" >&2;;
+   \?) echo "Invalid option -$OPTARG" >&2
+       exit 1
+       ;;
   esac
 done
 shift $((OPTIND - 1))
