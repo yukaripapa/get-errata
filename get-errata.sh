@@ -100,8 +100,6 @@ if [ "$opt_x86_64" = "True" ]; then
     rpm_pattern="src.rpm\|x86_64\|i686\|noarch"
 fi
 
-echo $product_pattern
-echo $rpm_pattern
 #
 # rpm-pkgのダウンロードリンクの抽出
 #  何故 400行としたか？ 2023yの時点でx86_64カーネルエラッタの取得が htmlテーブル上に 260行程度で記載されており、
