@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
-VERSION="3.15"
+VERSION="3.18"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -128,6 +128,10 @@ if [ -n "$result" ]; then
 else
   echo "Downloading is finished!"
 fi
+# ディレクトリを作成しrpm格納する
+# ディレクトリ名の取り出し
+output_dir="${file_name%.*}"
+mv sha256sum.txt ${output_dir}-sha256sum.txt
 #
 # rhel7かどうか判定
 #
@@ -173,11 +177,11 @@ if [ "$is_el7" = "False"  ]; then
 # rhel7以外の場合ダウンロード不要パッケージを削除する。
 #
 # kernel-tools-libs-devel
-  du -a $output_dir/ | grep kernel-tools-libs-devel | gawk '{print "rm " $2}' | sh
+  du -a $output_dir/ | grep -v el7 | grep kernel-tools-libs-devel | gawk '{print "rm " $2}' | sh
 fi
 
 # treeを取得する。
-tree $output_dir/ >${output_dir}-tree.txt
+LANG=C tree $output_dir/ >${output_dir}-tree.txt
 md5sum $output_dir/*/*.rpm >${output_dir}-md5sum.txt
 
 
