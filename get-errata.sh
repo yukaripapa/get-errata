@@ -131,7 +131,6 @@ fi
 # ディレクトリを作成しrpm格納する
 # ディレクトリ名の取り出し
 output_dir="${file_name%.*}"
-mv sha256sum.txt ${output_dir}-sha256sum.txt
 #
 # rhel7かどうか判定
 #
@@ -183,6 +182,7 @@ fi
 # treeを取得する。
 LANG=C tree $output_dir/ >${output_dir}-tree.txt
 md5sum $output_dir/*/*.rpm >${output_dir}-md5sum.txt
+sha256sum $output_dir/*/*.rpm >${output_dir}-sha256sum.txt
 
 
 
