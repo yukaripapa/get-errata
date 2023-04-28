@@ -124,10 +124,19 @@ echo 'checking original'
 grep -v -f sha256key sha256sum.lst
 result=$(grep -v -f sha256key sha256sum.lst )
 if [ -n "$result" ]; then
-  echo "ダウンロードが失敗したファイルがあります。表示されたチェックサムのファイルを再度ダウンロードしてみてください。"
+  echo "some downloads are broken. check sha256sum belows..."
 else
-  echo "正常にダウンロードされました"
+  echo "Downloading is finished!"
 fi
+#
+# rhel7かどうか判定
+#
+is_el7="False"
+if ls *el7*rpm >/dev/null 2>&1; then 
+    is_el7="True"
+    echo "el7 detected"
+fi
+
 # ディレクトリを作成しrpm格納する
 # ディレクトリ名の取り出し
 output_dir="${file_name%.*}"
@@ -158,11 +167,15 @@ else
     mkdir -p $output_dir/x86_64
     mv *.rpm $output_dir/x86_64
 fi
+
+if [ "$is_el7" = "False"  ]; then
 #
-# ダウンロード不要パッケージを削除する。
+# rhel7以外の場合ダウンロード不要パッケージを削除する。
 #
 # kernel-tools-libs-devel
-du -a $output_dir/ | grep kernel-tools-libs-devel | gawk '{print "rm " $2}' | sh
+  du -a $output_dir/ | grep kernel-tools-libs-devel | gawk '{print "rm " $2}' | sh
+fi
+
 # treeを取得する。
 tree $output_dir/ >${output_dir}-tree.txt
 md5sum $output_dir/*/*.rpm >${output_dir}-md5sum.txt
