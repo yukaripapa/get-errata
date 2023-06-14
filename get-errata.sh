@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
-VERSION="3.18"
+VERSION="3.20"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -39,6 +39,7 @@ version=$VERSION
 Options:
   -h help
   -a aarch64
+  -d all download
   -n No Download. (just re-generate checksums.)
 "
 
@@ -47,10 +48,13 @@ if [ $# -eq 0 ]; then
   exit 0
 fi
 
-while getopts "anhxv" opt; do
+while getopts "andhxv" opt; do
   case $opt in
    a) opt_aarch64='True'
       echo "option -a specified"
+       ;;
+   d) opt_all_download='True'
+      echo "option -d specified"
        ;;
    x) opt_x86_64='True'
       echo "option -x specified"
@@ -102,9 +106,14 @@ fi
 
 #
 # rpm-pkgのダウンロードリンクの抽出
-#  何故 400行としたか？ 2023yの時点でx86_64カーネルエラッタの取得が htmlテーブル上に 260行程度で記載されており、
+#  何故 800行としたか？ 2023yの時点でx86_64カーネルエラッタの取得が htmlテーブル上に 260行程度で記載されており、
 # 将来パッケージ数の増加に対応できるようにした。(product B欄は IBMzなので２番目のgrepで除外される。)
-egrep -m 1 -A 800 "$product_pattern" $file_name | grep auth_= |gawk '{print $5}'|sort -u|grep "$rpm_pattern" |gawk -F">" '{print $1}'|sed 's/href=//g'|sed 's/\&amp;/\&/g'|gawk -F"[/?]" '{print "curl --output " $11 " " $0}' > $sh_filename    
+search_depth=800
+if [ "$opt_all_download" = "True"  ]; then
+# 特別パッケージ量が多い場合はダウンロードリンクを多めにサーチする
+   search_depth=30000
+fi
+egrep -m 1 -A $search_depth "$product_pattern" $file_name | grep auth_= |gawk '{print $5}'|sort -u|grep "$rpm_pattern" |gawk -F">" '{print $1}'|sed 's/href=//g'|sed 's/\&amp;/\&/g'|gawk -F"[/?]" '{print "curl --output " $11 " " $0}' > $sh_filename    
 # ダウンロードスクリプトの実行
 echo $opt_no_download
 if [ -z $opt_no_download  ]; then
