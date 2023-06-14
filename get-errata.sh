@@ -86,7 +86,7 @@ sh_filename="${file_name%.*}.sh"
 echo $opt_aarch64
 if [ "$opt_aarch64" = "True"  ]; then
     # aarch64の場合のダウンロード
-    product_pattern="^.h2.Red Hat Enterprise Linux.*(ARM)"
+    product_pattern="^.h2.Red Hat Enterprise Linux.*ARM"
     rpm_pattern="src.rpm\|aarch64\|noarch"
     echo "ARM downloading"
     echo  $opt_x86_64
