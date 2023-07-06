@@ -148,6 +148,14 @@ if ls *el7*rpm >/dev/null 2>&1; then
     is_el7="True"
     echo "el7 detected"
 fi
+#
+# rhel9かどうか判定
+#
+is_el9="False"
+if ls *el9*rpm >/dev/null 2>&1; then 
+    is_el9="True"
+    echo "el9 detected"
+fi
 
 # ディレクトリを作成しrpm格納する
 # ディレクトリ名の取り出し
@@ -180,12 +188,17 @@ else
     mv *.rpm $output_dir/x86_64
 fi
 
+#
+# ダウンロード不要パッケージを削除する。
+#
+# !el7 kernel-tools-libs-devel
 if [ "$is_el7" = "False"  ]; then
-#
-# rhel7以外の場合ダウンロード不要パッケージを削除する。
-#
-# kernel-tools-libs-devel
   du -a $output_dir/ | grep -v el7 | grep kernel-tools-libs-devel | gawk '{print "rm " $2}' | sh
+fi
+#
+# el9 kernel-cross-headers
+if [ "$is_el9" = "True"  ]; then
+  du -a $output_dir/ | grep el9 | grep kernel-cross-headers | gawk '{print "rm " $2}' | sh
 fi
 
 # treeを取得する。
