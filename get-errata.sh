@@ -92,7 +92,7 @@ if [ "$opt_aarch64" = "True"  ]; then
     echo  $opt_x86_64
 else
     # （その他）x86_64の場合のダウンロード
-    product_pattern="^.h2.Red Hat Enterprise Linux.*(x86_64.*SAP|(Extended Life Cycle Support)|(Server 7))"
+    product_pattern="^.h2.Red Hat Enterprise Linux.*(AUS|x86_64.*SAP|(Extended Life Cycle Support)|(Server 7))"
     rpm_pattern="src.rpm\|x86_64\|i686\|noarch"
 fi
 
@@ -100,7 +100,7 @@ fi
 if [ "$opt_x86_64" = "True" ]; then
     # 強制的にx86_64の場合のダウンロードを実施する。
     echo "forcing x86_64 downloading"
-    product_pattern="^.h2.Red Hat Enterprise Linux.*(x86_64.*SAP|(Extended Life Cycle Support)|(Server 7))"
+    product_pattern="^.h2.Red Hat Enterprise Linux.*(AUS|x86_64.*SAP|(Extended Life Cycle Support)|(Server 7))"
     rpm_pattern="src.rpm\|x86_64\|i686\|noarch"
 fi
 
@@ -113,7 +113,7 @@ if [ "$opt_all_download" = "True"  ]; then
 # 特別パッケージ量が多い場合はダウンロードリンクを多めにサーチする
    search_depth=30000
 fi
-egrep -m 1 -A $search_depth "$product_pattern" $file_name | grep auth_= |gawk '{print $5}'|sort -u|grep "$rpm_pattern" |gawk -F">" '{print $1}'|sed 's/href=//g'|sed 's/\&amp;/\&/g'|gawk -F"[/?]" '{print "curl --output " $11 " " $0}' > $sh_filename    
+egrep -m 2 -A $search_depth "$product_pattern" $file_name | grep auth_= |gawk '{print $5}'|sort -u|grep "$rpm_pattern" |gawk -F">" '{print $1}'|sed 's/href=//g'|sed 's/\&amp;/\&/g'|gawk -F"[/?]" '{print "curl --output " $11 " " $0}' > $sh_filename    
 # ダウンロードスクリプトの実行
 echo $opt_no_download
 if [ -z $opt_no_download  ]; then
