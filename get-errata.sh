@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
-VERSION="3.20"
+VERSION="4.10"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -149,6 +149,14 @@ if ls *el7*rpm >/dev/null 2>&1; then
     echo "el7 detected"
 fi
 #
+# rhel8かどうか判定
+#
+is_el8="False"
+if ls *el8*rpm >/dev/null 2>&1; then 
+    is_el8="True"
+    echo "el8 detected"
+fi
+#
 # rhel9かどうか判定
 #
 is_el9="False"
@@ -199,6 +207,16 @@ fi
 # el9 kernel-cross-headers
 if [ "$is_el9" = "True"  ]; then
   du -a $output_dir/ | grep el9 | grep kernel-cross-headers | gawk '{print "rm " $2}' | sh
+fi
+#
+# el8/el9 glibc
+if [ "$is_el8" = "True" -o "$is_el9" = "True"  ]; then
+  du -a $output_dir/ | grep glibc-benchtests-2 | gawk '{print "rm " $2}' | sh
+  du -a $output_dir/ | grep glibc-nss-devel-2 | gawk '{print "rm " $2}' | sh
+  du -a $output_dir/ | grep glibc-static-2 | gawk '{print "rm " $2}' | sh
+  du -a $output_dir/ | grep nss_hesiod-2 | gawk '{print "rm " $2}' | sh
+  # remove more pkg in el9
+  du -a $output_dir/ | grep el9 | grep nss_db-2 | gawk '{print "rm " $2}' | sh
 fi
 
 # treeを取得する。
