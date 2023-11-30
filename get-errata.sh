@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
-VERSION="5.20"
+VERSION="5.66"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -92,7 +92,7 @@ if [ "$opt_aarch64" = "True"  ]; then
     echo  $opt_x86_64
 else
     # （その他）x86_64の場合のダウンロード
-    product_pattern="^.h2.Red Hat Enterprise Linux.*(AUS|(x86_64.*SAP)|(x86_64 [89])|(Extended Life Cycle Support)|(Server 7))"
+    product_pattern="^.h2.Red Hat Enterprise Linux.*(AUS|(x86_64.*SAP)|(x86_64 [89])|(x86_64 .*Update Support)|(Extended Life Cycle Support)|(Server 7))"
     rpm_pattern="src.rpm\|x86_64\|i686\|noarch"
 fi
 
@@ -100,7 +100,7 @@ fi
 if [ "$opt_x86_64" = "True" ]; then
     # 強制的にx86_64の場合のダウンロードを実施する。
     echo "forcing x86_64 downloading"
-    product_pattern="^.h2.Red Hat Enterprise Linux.*(AUS|(x86_64.*SAP)|(x86_64 [89])|(Extended Life Cycle Support)|(Server 7))"
+    product_pattern="^.h2.Red Hat Enterprise Linux.*(AUS|(x86_64.*SAP)|(x86_64 [89])|(x86_64 .*Update Support)|(Extended Life Cycle Support)|(Server 7))"
     rpm_pattern="src.rpm\|x86_64\|i686\|noarch"
 fi
 
@@ -113,7 +113,7 @@ if [ "$opt_all_download" = "True"  ]; then
 # 特別パッケージ量が多い場合はダウンロードリンクを多めにサーチする
    search_depth=30000
 fi
-egrep -m 2 -A $search_depth "$product_pattern" $file_name | grep auth_= |gawk '{print $5}'|sort -u|grep "$rpm_pattern" |gawk -F">" '{print $1}'|sed 's/href=//g'|sed 's/\&amp;/\&/g'|gawk -F"[/?]" '{print "curl --output " $11 " " $0}' > $sh_filename    
+egrep -m 2 -A $search_depth "$product_pattern" $file_name | grep auth_= |gawk '{print $5}'|sort -u|grep "$rpm_pattern" |gawk -F">" '{print $1}'|sed 's/href=//g'|sed 's/\&amp;/\&/g'|gawk -F"[/?]" '{print "echo " NR ":" $11 "; curl --output " $11 " " $0}' > $sh_filename    
 # ダウンロードスクリプトの実行
 echo $opt_no_download
 if [ -z $opt_no_download  ]; then
@@ -219,10 +219,12 @@ if [ "$is_el8" = "True" -o "$is_el9" = "True"  ]; then
   du -a $output_dir/ | grep el9 | grep nss_db-2 | gawk '{print "rm " $2}' | sh
 fi
 
-# treeを取得する。
+# tree/checksumを取得する。
 LANG=C tree $output_dir/ >${output_dir}-tree.txt
 md5sum $output_dir/*/*.rpm >${output_dir}-md5sum.txt
 sha256sum $output_dir/*/*.rpm >${output_dir}-sha256sum.txt
+# フォルダーへコピーする
+cp ${output_dir}-tree.txt ${output_dir}-md5sum.txt ${output_dir}-sha256sum.txt ${output_dir}
 
 
 
