@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.sh RHSA-2023-0951.html
 # 
-VERSION="5.66"
+VERSION="5.99"
 #  htmlファイルに含まれるダウンロードリンクを集め
 # rpmのダウンロードとチェックサム確認を行う。
 # ファイルの内容からダウンロードリンクを集め curlを実行するシェルスクリプトを作成する。
@@ -92,7 +92,7 @@ if [ "$opt_aarch64" = "True"  ]; then
     echo  $opt_x86_64
 else
     # （その他）x86_64の場合のダウンロード
-    product_pattern="^.h2.Red Hat Enterprise Linux.*(AUS|(x86_64.*SAP)|(x86_64 [89])|(x86_64 .*Update Support)|(Extended Life Cycle Support)|(Server 7))"
+    product_pattern="^.h2.Red Hat Enterprise Linux.*(AUS|(x86_64.*SAP)|(x86_64 [89])|(x86_64 .*Update Support)|(Extended Life Cycle Support)|(Server 7)|(Real Time 7))"
     rpm_pattern="src.rpm\|x86_64\|i686\|noarch"
 fi
 
