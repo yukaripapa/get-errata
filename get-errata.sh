@@ -207,6 +207,8 @@ fi
 # el9 kernel-cross-headers
 if [ "$is_el9" = "True"  ]; then
   du -a $output_dir/ | grep el9 | grep kernel-cross-headers | gawk '{print "rm " $2}' | sh
+  du -a $output_dir/ | grep el9 | grep internal-5 | gawk '{print "rm " $2}' | sh
+  du -a $output_dir/ | grep el9 | grep modules-partner | gawk '{print "rm " $2}' | sh      
 fi
 #
 # el8/el9 glibc
@@ -215,8 +217,12 @@ if [ "$is_el8" = "True" -o "$is_el9" = "True"  ]; then
   du -a $output_dir/ | grep glibc-nss-devel-2 | gawk '{print "rm " $2}' | sh
   du -a $output_dir/ | grep glibc-static-2 | gawk '{print "rm " $2}' | sh
   du -a $output_dir/ | grep nss_hesiod-2 | gawk '{print "rm " $2}' | sh
+  # remove more pkg in el8
+  du -a $output_dir/ | grep el8 | grep internal-4 | gawk '{print "rm " $2}' | sh
   # remove more pkg in el9
   du -a $output_dir/ | grep el9 | grep nss_db-2 | gawk '{print "rm " $2}' | sh
+
+
 fi
 
 # tree/checksumを取得する。
