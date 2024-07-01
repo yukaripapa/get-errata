@@ -6,9 +6,9 @@
 #
 # ex. $ get-errata.py RHSA-2023:0951
 #
-#   errata番号からダウンロード実行シェルを作成する
+#   
 #
-help_txt='\n# get-errata.py : a tool of rhn errata-page downloader.\n\n  ex. $ get-errata.py RHSA-2023:0951\n\n   errata番号からダウンロード実行シェルを作成する\n'
+help_txt='\n# get-errata.py : a tool of rhn errata-page downloader.\n\n  ex. $ get-errata.py RHSA-2023:0951\n\n   Generate a shell script that downloads and executes the packages based on the errata number.\n'
 
 
 from itertools import count
@@ -99,12 +99,7 @@ def write_to_json(filename, data):
       data: The JSON data to append.
   """
   outfile = open(filename, 'r+')
-  # Read existing data
-  #existing_data = json.loads(outfile)
-  # Append new data
   package_list=data
-  #print(f"\nexistin_data {existing_data}\n")
-  #existing_data.extend(package_list)
   # Seek to the beginning of the file
   outfile.seek(0)
   # Overwrite with updated data
@@ -122,36 +117,22 @@ def download_package(access_token, checksum, filename, package):
     print(f"Error: Failed to fetch errata packages. {e}")
     return None
 
-  #try:
-  #  dresponse = requests.get(durl, headers=headers)
-  #  print("dresponse {dresponse}")
-  #  dresponse.raise_for_status()  # Raise an exception for non-2xx status codes
-  #  return dresponse.json()
-  #except drequests.exceptions.RequestException as e:
-  #  print(f"Error: Failed to fetch download packages. {e}")
-  #  return None
-  
 def main():
-# Replace 'YOUR_OFFLINE_TOKEN' with your actual refresh token
-# 環境変数からオフライントークンを取得
+# Replace 'OFFLINE_TOKEN' with your actual refresh token
 #
-# 以下のurlから事前にオフライントークンを作成しておく。（30日間有効）
+# Create an offline token in advance from the following URL (valid for 30 days).
 # https://access.redhat.com/management/api
 #
   offline_token = os.getenv('OFFLINE_TOKEN')
+  # user offline token
+  # offline_token = 'users offline token'
   if not offline_token:
-    raise Exception('OFFLINE_TOKEN 環境変数が設定されていません。')
+    raise Exception('OFFLINE_TOKEN environment variable is not set.')
   access_token = get_access_token(offline_token)
-  #access_token = os.getenv('ACCESS_TOKEN')
-  #if access_token:
-  #  print(f"Access Token: {access_token}")
-  #else:
-  #  print("Failed to obtain access token.")
-  #errata_id = 'RHSA-2024:4108'
   if len(sys.argv) > 1:
     errata_id = sys.argv[1]
   else:
-    print("RHSA番号を指定してください")
+    print("Please specify an RHSA no.")
     print(f"{help_txt}")    
     exit()
   filename = f"{errata_id}.json"  # Output filename
@@ -175,17 +156,13 @@ def main():
   # Append all collected packages to the output file
   write_to_json(filename, all_packages)
   matching_packages = []
-  # ソースコードパッケージを取り出す
-  #tokens = [{"offline_token": f"{offline_token}","access_token": f"{access_token}",}]
-  #matching_packages.append(tokens)
-  #  src_packages = [item for item in all_packages if item['arch'] == 'src']
-  #  matching_packages.append(src_packages)
+  # Get the source code package
   for item in all_packages:
     if item['arch'] == 'src':
        matching_packages.append(item)
        break
   #matching_packages = []
-  # x86_64のpackagesだけ取り出す
+  # Extract only the packages that are for x86_64 architecture.
   # Define the pattern to match
   #   rhel-9-for-x86_64-baseos-aus
   pattern = r"rhel-[89]-for-x86_64-[ab]"
@@ -203,17 +180,6 @@ def main():
               matching_packages.append(package)
               prevchecksum=checksum
 
-  #write_to_json(filename, matching_packages)              
-  # Download 
-  #for package in matching_packages:
-  #      #
-  #    if package['arch']:
-  #      print(f"Downloading \n{package}\n")
-  #      checksum=package['checksum']
-  #      filename=package['filename']
-  #      download_data=download_package(access_token, checksum, filename, package)
-  #      print(f"\n{download_data}\n")
-  #      break
   script_name = f"{filename[:-5]}.sh"
   shellfile = open(script_name, "w")
   shellfile.write(f'export access_token={access_token};')
