@@ -6,9 +6,10 @@
 #
 # ex. $ get-errata.py RHSA-2023:0951
 #
+VERSION="6.10"
 #   
 #
-help_txt='\n# get-errata.py : a tool of rhn errata-page downloader.\n\n  ex. $ get-errata.py RHSA-2023:0951\n\n   Generate a shell script that downloads and executes the packages based on the errata number.\n'
+help_txt=f'\n# get-errata.py : a tool of rhn errata-page downloader.\n\n  ex. $ get-errata.py RHSA-2023:0951\n\n{VERSION}\n   Generate a shell script that downloads and executes the packages based on the errata number.\n'
 
 
 from itertools import count
@@ -19,6 +20,8 @@ import requests
 import subprocess
 import time
 import sys
+import argparse
+
 
 def json_value(data, key):
   """
@@ -118,6 +121,27 @@ def download_package(access_token, checksum, filename, package):
     return None
 
 def main():
+  # get Options
+  parser = argparse.ArgumentParser(description='Sample Script with Options')
+  # Adding flag options
+  #  parser.add_argument('-h', action='store_true', help='Display help')
+  parser.add_argument('-a', action='store_true', help='arch is aarch64(default:x86_64)')
+  parser.add_argument('-n', action='store_true', help='No download. just recreatea download script')
+  parser.add_argument('-v', action='store_true', help='print version')  
+  parser.add_argument('RHSA', type=str, help='Red Hat Security Advisory identifier (e.g., RHSA-2024:4108)')
+  # Parsing arguments
+  args = parser.parse_args()
+
+  # Using arguments
+  if args.a:
+      print('aarch64 download')
+  if args.n:
+      print('Skip Downloading')  
+  if args.v:
+      print(f'version={VERSION}')
+      exit()
+      
+
 # Replace 'OFFLINE_TOKEN' with your actual refresh token
 #
 # Create an offline token in advance from the following URL (valid for 30 days).
@@ -130,7 +154,7 @@ def main():
     raise Exception('OFFLINE_TOKEN environment variable is not set.')
   access_token = get_access_token(offline_token)
   if len(sys.argv) > 1:
-    errata_id = sys.argv[1]
+    errata_id = args.RHSA
   else:
     print("Please specify an RHSA no.")
     print(f"{help_txt}")    
@@ -166,6 +190,8 @@ def main():
   # Define the pattern to match
   #   rhel-9-for-x86_64-baseos-aus
   pattern = r"rhel-[89]-for-x86_64-[ab]"
+  if args.a:
+      pattern = r"rhel-[89]-for-aarch64-[ab]"
   prevchecksum="e242e4a03507144df7ebd084d568fd2bf90d28b"
   # Iterate through each package in the original list
   for package in all_packages:
@@ -174,7 +200,7 @@ def main():
       # Check if any 'contentSets' element matches the pattern
       for content_set in package['contentSets']:
           if re.search(r"rhel-7", content_set):
-             pattern = r"rhel-7-server-els-" 
+             pattern = r"rhel-7-server-" 
           if re.search(pattern, content_set) and (prevchecksum != checksum):
               # Append the matching package to the 'matching_packages' list
               matching_packages.append(package)
@@ -196,8 +222,18 @@ def main():
     shellfile.write(curl_str)
     shellfile.write('\n')    
 
-    #  shellfile.close()
-  
+  #
+  # closing shellfile
+  shellfile.close()
+
+  # Option '-n' just create scripts.
+  if args.n:
+      exit()
+
+  # just execute download script
+  os.system(f"bash {script_name}")
+  exit()    
+          
 if __name__ == "__main__":
   main()
 

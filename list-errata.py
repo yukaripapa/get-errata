@@ -216,7 +216,7 @@ def main():
               max_advisory_no = advisory_no
           next_download_list.append(errata_tkt)  
           print(f"{advisoryid} {synopsis}")
-          os.system(f"mkdir {advisoryid}; cd {advisoryid}; ../get-errata/get-errata.py {advisoryid}")
+          os.system(f"mkdir {advisoryid}; cd {advisoryid}; ../get-errata/get-errata.py -n {advisoryid}")
   if next_download_list :
       print("以上のerrataのダウンロードが必要です。")
   else:
