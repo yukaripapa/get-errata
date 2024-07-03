@@ -98,7 +98,7 @@ def fetch_errata_packages(access_token, errata_id, offset):
     print(f"Error: Failed to fetch errata packages. {e}")
     return None
 
-def fetch_errata_list(access_token, content_set):
+def fetch_errata_list(access_token):
   """
   Fetches Red Hat Errata packages using the specified access token and offset.
 
@@ -112,7 +112,7 @@ def fetch_errata_list(access_token, content_set):
   Returns:
       The JSON response from the API call, or None on error.
   """
-  url = f"https://api.access.redhat.com/management/v1/errata/cset/{content_set}/arch/x86_64?limit=200"
+  url = f"https://api.access.redhat.com/management/v1/errata"
   headers = {"Authorization": f"Bearer {access_token}"}
 
   try:
@@ -195,17 +195,16 @@ def main():
   # Initialize an empty list to store all packages
   download_list = []
   content_sets = [ "rhel-7-server-els-rpms", "rhel-8-for-x86_64-baseos-aus-rpms", "rhel-9-for-x86_64-baseos-aus-rpms" ]      
-  for content_set in content_sets:
-      fetch_erratas = fetch_errata_list(access_token, content_set)
-      errata_list = []
-      errata_list.extend(fetch_erratas['body'])
-      for errata_tkt in errata_list:
-          #print("{errata_tkt}")        
-          if re.search(r'kernel|glibc', errata_tkt['synopsis']):
-              # Append the matching package to the 'download_list' list
-              download_list.append(errata_tkt)
-  next_download_list = []
+  errata_list = []
+  fetch_erratas = fetch_errata_list(access_token)
+  errata_list.extend(fetch_erratas['body'])
+  for errata_tkt in errata_list:
+      #print(f"{errata_tkt['advisoryId']} {errata_tkt['synopsis']}")
+      if re.search(r'kernel|glibc', errata_tkt['synopsis']):
+          # Append the matching package to the 'download_list' list
+          download_list.append(errata_tkt)
 
+  next_download_list = []
   for errata_tkt in download_list:
       synopsis=errata_tkt['synopsis']
       advisoryid=errata_tkt['advisoryId']
@@ -216,6 +215,7 @@ def main():
               max_advisory_no = advisory_no
           next_download_list.append(errata_tkt)  
           print(f"{advisoryid} {synopsis}")
+          # ダウンロードスクリプトだけ作成'-n'する.
           os.system(f"mkdir {advisoryid}; cd {advisoryid}; ../get-errata/get-errata.py -n {advisoryid}")
   if next_download_list :
       print("以上のerrataのダウンロードが必要です。")
@@ -253,12 +253,14 @@ def main():
       print(f"{advisoryid} {src_pkg_name}")              
       os.system(f"cd {advisoryid}; bash {advisoryid}.sh")
       os.system(f"cd {advisoryid}; rm {advisoryid}.sh  {advisoryid}.json")
-      os.system(f"cd {advisoryid}; mkdir SRPMS; mv *src.rpm SRPMS; mkdir X86_64; mv *rpm X86_64")
-      os.system(f"md5sum {advisoryid}/*/*rpm >{advisoryid}/{advisoryid}-md5sum.txt")
-      os.system(f"sha256sum {advisoryid}/*/*rpm >{advisoryid}/{advisoryid}-sha256sum.txt")
-      os.system(f"LANG=C tree {advisoryid} >{advisoryid}/{advisoryid}-tree.txt")            
+      #os.system(f"cd {advisoryid}; mkdir SRPMS; mv *src.rpm SRPMS; mkdir X86_64; mv *rpm X86_64")
+      #os.system(f"md5sum {advisoryid}/*/*rpm >{advisoryid}/{advisoryid}-md5sum.txt")
+      os.system(f"sha256sum {advisoryid}/*rpm >{advisoryid}/{advisoryid}-sha256sum.txt")
+      #os.system(f"LANG=C tree {advisoryid} >{advisoryid}/{advisoryid}-tree.txt")            
 
-
+  #
+  # main()終了
+  
 #
 # main()の実行
 if __name__ == "__main__":

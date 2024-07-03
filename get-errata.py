@@ -227,16 +227,26 @@ def main():
   shellfile.close()
 
   # Option '-n' just create scripts.
-  if args.n:
-      exit()
-
-  # just execute download script
-  os.system(f"bash {script_name}")
-  exit()    
-          
-if __name__ == "__main__":
-  main()
-
+  if args.n :
+      print('skip downloading')
+  else:
+      # just execute download script
+      os.system(f"bash {script_name}")
+      os.system(f"rm {script_name} {errata_id}.json")
+  #
+  # making directory and move rpms.
+  os.system(f"mkdir -p {errata_id}/SRPM; mv *src.rpm {errata_id}/SRPM")
+  archdir='x86_64'
+  if args.a:
+      archdir='aarch64'
+  os.system(f"mkdir {errata_id}/{archdir}; mv *.rpm {errata_id}/{archdir}")  
+  #
+  # making checksums
+  os.system(f"md5sum  {errata_id}/*/*rpm >{errata_id}/{errata_id}-md5sum.txt")
+  os.system(f"sha256sum  {errata_id}/*/*rpm >{errata_id}/{errata_id}-sha256sum.txt")
+  os.system(f"LANG=C tree {errata_id} >{errata_id}/{errata_id}-tree.txt")
 
   
+if __name__ == "__main__":
+  main()
 
