@@ -137,9 +137,7 @@ def main():
       print('aarch64 download')
   if args.n:
       print('Skip Downloading')  
-  if args.v:
-      print(f'version={VERSION}')
-      exit()
+
       
 
 # Replace 'OFFLINE_TOKEN' with your actual refresh token
