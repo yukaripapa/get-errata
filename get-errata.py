@@ -127,7 +127,7 @@ def main():
   #  parser.add_argument('-h', action='store_true', help='Display help')
   parser.add_argument('-a', action='store_true', help='arch is aarch64(default:x86_64)')
   parser.add_argument('-n', action='store_true', help='No download. just recreatea download script')
-  parser.add_argument('-v', action='store_true', help='print version')  
+  parser.add_argument('-v', '--version', action='version', version=f'%(prog)s ver={VERSION}')
   parser.add_argument('RHSA', type=str, help='Red Hat Security Advisory identifier (e.g., RHSA-2024:4108)')
   # Parsing arguments
   args = parser.parse_args()
