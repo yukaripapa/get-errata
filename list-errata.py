@@ -98,7 +98,7 @@ def fetch_errata_packages(access_token, errata_id, offset):
     print(f"Error: Failed to fetch errata packages. {e}")
     return None
 
-def fetch_errata_list(access_token):
+def fetch_errata_list(access_token, errata_id):
   """
   Fetches Red Hat Errata packages using the specified access token and offset.
 
@@ -112,7 +112,7 @@ def fetch_errata_list(access_token):
   Returns:
       The JSON response from the API call, or None on error.
   """
-  url = f"https://api.access.redhat.com/management/v1/errata"
+  url = f"https://api.access.redhat.com/management/v1/errata/{errata_id}"
   headers = {"Authorization": f"Bearer {access_token}"}
 
   try:
@@ -120,7 +120,7 @@ def fetch_errata_list(access_token):
     response.raise_for_status()  # Raise an exception for non-2xx status codes
     return response.json()
   except requests.exceptions.RequestException as e:
-    print(f"Error: Failed to fetch errata list. {e}")
+    #print(f"Error: Failed to fetch errata list. {e}")
     return None
   
 def write_to_json(filename, data):
@@ -163,7 +163,49 @@ def download_package(access_token, checksum, filename, package):
   #except drequests.exceptions.RequestException as e:
   #  print(f"Error: Failed to fetch download packages. {e}")
   #  return None
-  
+
+def increment_lookup_no(lookup_no):
+  """
+  Increments the last four digits of `lookup_no` by one and returns a new string.
+
+  Args:
+    lookup_no: A string in the format "YYYY:NNNN".
+
+  Returns:
+    A new string in the format "YYYY:NNNN".
+
+  Raises:
+    ValueError: If the format of `lookup_no` is invalid.
+  """
+
+  if not re.match(r"^\d{4}:\d{4}$", lookup_no):
+    raise ValueError(f"Invalid format for lookup_no: '{lookup_no}'.")
+
+  year, no = lookup_no.split(":")
+  no = int(no) + 1
+  new_no = str(no).zfill(4)
+  return f"{year}:{new_no}"
+
+def has_error_member(fetch_erratas):
+  """
+  Determines whether the 'error' member is defined in the dictionary object `fetch_erratas`.
+
+  Args:
+    fetch_erratas: A dictionary object.
+
+  Returns:
+    True if the 'error' member exists, False otherwise.
+  """
+
+  if fetch_erratas is None:
+    return False
+
+  try:
+    return 'error' in fetch_erratas
+  except TypeError:
+    # If `fetch_erratas` is not a dictionary object
+    return False
+
 def main():
 # Replace 'YOUR_OFFLINE_TOKEN' with your actual refresh token
 # 環境変数からオフライントークンを取得
@@ -186,30 +228,56 @@ def main():
   try:
     with open(lookup_file_path, "r") as file:
         last_lookup = file.read().strip()  # ファイルの内容を読み込み、改行を削除
-        print(f"ダウンロード済みerrata番号: {last_lookup}")
+        print(f"チェック済みerrata番号: {last_lookup}")
   except FileNotFoundError:
     print(f"{file_path} が見つかりませんでした。")
-  adv_pattern = r".{9}$"  # 下9桁の文字を表す正規表現パターン 'RHSA-2024:1234'
-  lookup_no = str(re.search(adv_pattern, last_lookup)) # lookup_no ='2024:1234'
-  max_advisory_no = lookup_no
+  last_lookup = last_lookup[5:] # lookup_no ='2024:1234'
+  max_advisory_no = last_lookup
+  lookup_no = last_lookup
   # Initialize an empty list to store all packages
   download_list = []
   content_sets = [ "rhel-7-server-els-rpms", "rhel-8-for-x86_64-baseos-aus-rpms", "rhel-9-for-x86_64-baseos-aus-rpms" ]      
+
   errata_list = []
-  fetch_erratas = fetch_errata_list(access_token)
-  errata_list.extend(fetch_erratas['body'])
+  for count2 in range(0, 40, 1):
+      error_count = 0
+      for count1 in range(0, 30, 1):
+          fetch_errata = fetch_errata_list(access_token, errata_id=f'RHSA-{lookup_no}')
+          if fetch_errata is None:
+              fetch_errata = fetch_errata_list(access_token, errata_id=f'RHBA-{lookup_no}')
+          if fetch_errata is None:
+              error_count = error_count + 1
+          else:
+              add_item=fetch_errata['body']
+              #print(f'{add_item}')
+              errata_list.append(add_item)
+              fetch_id=add_item['id']
+              fetch_syn=add_item['synopsis']
+              error_count = 0
+          lookup_no=increment_lookup_no(lookup_no)
+      print(f"Searching After {fetch_id} : {fetch_syn} ")               
+      if error_count == 30:
+          break
+
+  download_count=0
   for errata_tkt in errata_list:
-      #print(f"{errata_tkt['advisoryId']} {errata_tkt['synopsis']}")
       if re.search(r'kernel|glibc', errata_tkt['synopsis']):
           # Append the matching package to the 'download_list' list
           download_list.append(errata_tkt)
+          download_count = download_count+1 
+      advisoryid=errata_tkt['id']
+      advisory_no = advisoryid[5:] # advisory_no ='2024:1234'
+      if advisory_no > max_advisory_no:
+          max_advisory = errata_tkt
+          max_advisory_no = advisory_no
+  print(f'errata {download_count} found.')
 
   next_download_list = []
   for errata_tkt in download_list:
       synopsis=errata_tkt['synopsis']
-      advisoryid=errata_tkt['advisoryId']
-      advisory_no = str(re.search(adv_pattern, advisoryid))
-      if advisory_no > lookup_no :
+      advisoryid=errata_tkt['id']
+      advisory_no = advisoryid[5:]
+      if advisory_no > last_lookup :
           if advisory_no > max_advisory_no:
               max_advisory = errata_tkt
               max_advisory_no = advisory_no
@@ -224,8 +292,8 @@ def main():
       exit()      
 #
 # 最終ダウンロード情報を更新する
-  if max_advisory_no > lookup_no :
-      max_advisory_no = str(max_advisory['advisoryId'])
+  if max_advisory_no > last_lookup :
+      max_advisory_no = str(max_advisory['id'])
       with open(lookup_file_path, 'w') as file:
           print(max_advisory_no, file=file)
       file.close()
@@ -234,7 +302,7 @@ def main():
 #
   for download_tkt in next_download_list:
       synopsis=download_tkt['synopsis']
-      advisoryid=download_tkt['advisoryId']
+      advisoryid=download_tkt['id']
       rpm_packages = []
       for offset in count(start=0, step=50):
           packages_data = fetch_errata_packages(access_token, advisoryid, offset)
@@ -254,7 +322,7 @@ def main():
       os.system(f"cd {advisoryid}; bash {advisoryid}.sh")
       os.system(f"cd {advisoryid}; rm {advisoryid}.sh  {advisoryid}.json")
       #os.system(f"cd {advisoryid}; mkdir SRPMS; mv *src.rpm SRPMS; mkdir X86_64; mv *rpm X86_64")
-      #os.system(f"md5sum {advisoryid}/*/*rpm >{advisoryid}/{advisoryid}-md5sum.txt")
+      os.system(f"md5sum {advisoryid}/*rpm >{advisoryid}/{advisoryid}-md5sum.txt")
       os.system(f"sha256sum {advisoryid}/*rpm >{advisoryid}/{advisoryid}-sha256sum.txt")
       #os.system(f"LANG=C tree {advisoryid} >{advisoryid}/{advisoryid}-tree.txt")            
 
