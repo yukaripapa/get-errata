@@ -101,24 +101,8 @@ def write_to_json(filename, data):
       filename: The name of the JSON file to append to.
       data: The JSON data to append.
   """
-  outfile = open(filename, 'r+')
-  package_list=data
-  # Seek to the beginning of the file
-  outfile.seek(0)
-  # Overwrite with updated data
-  json.dump(package_list, outfile, indent=4)
-
-def download_package(access_token, checksum, filename, package):
-  durl = f"https://api.access.redhat.com/management/v1/packages/{checksum}"
-  durlheaders = {"Authorization": f"Bearer {access_token}"}
-  print(f"durl: {durl} {durlheaders}\n")
-  try:
-    response = requests.get(durl, headers=durlheaders)
-    response.raise_for_status()  # Raise an exception for non-2xx status codes
-    return response.json()
-  except requests.exceptions.RequestException as e:
-    print(f"Error: Failed to fetch errata packages. {e}")
-    return None
+  with open(filename, 'w') as outfile:
+    json.dump(data, outfile, indent=4)
 
 def main():
   # get Options
@@ -138,32 +122,29 @@ def main():
   if args.n:
       print('Skip Downloading')  
 
-      
-
-# Replace 'OFFLINE_TOKEN' with your actual refresh token
-#
-# Create an offline token in advance from the following URL (valid for 30 days).
-# https://access.redhat.com/management/api
-#
+  # Replace 'OFFLINE_TOKEN' with your actual refresh token
+  #
+  # Create an offline token in advance from the following URL (valid for 30 days).
+  # https://access.redhat.com/management/api
+  #
   offline_token = os.getenv('OFFLINE_TOKEN')
   # user offline token
   # offline_token = 'users offline token'
   if not offline_token:
     raise Exception('OFFLINE_TOKEN environment variable is not set.')
+  
   access_token = get_access_token(offline_token)
+  
   if len(sys.argv) > 1:
     errata_id = args.RHSA
   else:
     print("Please specify an RHSA no.")
     print(f"{help_txt}")    
     exit()
+  
   filename = f"{errata_id}.json"  # Output filename
   # Initialize an empty list to store all packages
   all_packages = []
-
-  # Creates an empty JSON file if it doesn't already exist.
-  outfile = open(filename, 'w') 
-  json.dump(all_packages, outfile)  # Write an empty JSON object
 
   # Fetch and append packages for each offset
   for offset in count(start=0, step=50):
@@ -174,16 +155,16 @@ def main():
     if pageinfo['count']==0 :
       break
 
-
   # Append all collected packages to the output file
   write_to_json(filename, all_packages)
+  
   matching_packages = []
   # Get the source code package
   for item in all_packages:
     if item['arch'] == 'src':
        matching_packages.append(item)
        break
-  #matching_packages = []
+  
   # Extract only the packages that are for x86_64 architecture.
   # Define the pattern to match
   #   rhel-9-for-x86_64-baseos-aus
@@ -205,29 +186,22 @@ def main():
               prevchecksum=checksum
 
   script_name = f"{filename[:-5]}.sh"
-  shellfile = open(script_name, "w")
-  shellfile.write(f'export access_token={access_token};')
-  shellfile.write(f'export fileno=1;')  
-  shellfile.write('\n')
-  fileno=1
-  for download_pkg in matching_packages:
-    checksum=download_pkg['checksum']
-    filename=download_pkg['filename']
-    shellfile.write(f'export filename={filename};')
-    shellfile.write(f'export checksum={checksum};')
-    shellfile.write(f'echo $fileno:$filename;let fileno=fileno+1;')
-    curl_str="curl -H \"Authorization: Bearer $access_token\" \"https://api.access.redhat.com/management/v1/packages/$checksum/download\" | jq | grep href.:|gawk '{print \"curl \" $2 \" -o $filename\"}'|sed -e 's/,//g'|sh ;"
-    shellfile.write(curl_str)
-    shellfile.write('\n')    
-
-  #
-  # closing shellfile
-  shellfile.close()
+  with open(script_name, "w") as shellfile:
+    shellfile.write(f'export access_token={access_token};\n')
+    shellfile.write(f'export fileno=1;\n')  
+    
+    fileno=1
+    for download_pkg in matching_packages:
+      checksum=download_pkg['checksum']
+      filename=download_pkg['filename']
+      shellfile.write(f'export filename={filename};\n')
+      shellfile.write(f'export checksum={checksum};\n')
+      shellfile.write(f'echo $fileno:$filename;let fileno=fileno+1;\n')
+      curl_str=f"curl -H \"Authorization: Bearer $access_token\" \"https://api.access.redhat.com/management/v1/packages/$checksum/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o $filename\"}}'|sed -e 's/,//g'|sh ;\n"
+      shellfile.write(curl_str)
 
   # Option '-n' just create scripts.
-  if args.n :
-      print('skip downloading')
-  else:
+  if not args.n :
       # just execute download script
       os.system(f"bash {script_name}")
       os.system(f"rm {script_name} {errata_id}.json")
@@ -247,4 +221,4 @@ def main():
   
 if __name__ == "__main__":
   main()
-
+  
