@@ -241,6 +241,7 @@ def main():
   errata_list = []
   for count2 in range(0, 40, 1):
       error_count = 0
+      time.sleep(5)  # 5秒間スリープ
       for count1 in range(0, 30, 1):
           fetch_errata = fetch_errata_list(access_token, errata_id=f'RHSA-{lookup_no}')
           if fetch_errata is None:
@@ -261,15 +262,16 @@ def main():
 
   download_count=0
   for errata_tkt in errata_list:
-      if re.search(r'kernel|glibc', errata_tkt['synopsis']):
-          # Append the matching package to the 'download_list' list
-          download_list.append(errata_tkt)
-          download_count = download_count+1 
-      advisoryid=errata_tkt['id']
-      advisory_no = advisoryid[5:] # advisory_no ='2024:1234'
-      if advisory_no > max_advisory_no:
-          max_advisory = errata_tkt
-          max_advisory_no = advisory_no
+      if re.search(r'(kernel|glibc)', errata_tkt['synopsis']):
+          if re.search(r'(?!kernel-rt)', errata_tkt['synopsis']):
+              # Append the matching package to the 'download_list' list
+              download_list.append(errata_tkt)
+              advisoryid=errata_tkt['id']
+              advisory_no = advisoryid[5:] # advisory_no ='2024:1234'
+              if advisory_no > max_advisory_no:
+                  download_count += 1
+                  max_advisory = errata_tkt
+                  max_advisory_no = advisory_no
   print(f'errata {download_count} found.')
 
   next_download_list = []
@@ -283,10 +285,10 @@ def main():
               max_advisory_no = advisory_no
           next_download_list.append(errata_tkt)  
           print(f"{advisoryid} {synopsis}")
-          # ダウンロードスクリプトだけ作成'-n'する.
-          os.system(f"mkdir {advisoryid}; cd {advisoryid}; ../get-errata/get-errata.py -n {advisoryid}")
+          # ダウンロード実行
+          os.system(f"mkdir {advisoryid}; cd {advisoryid}; ../get-errata/get-errata.py  {advisoryid}")
   if next_download_list :
-      print("以上のerrataのダウンロードが必要です。")
+      print("以上のerrataのダウンロードを実行しました。")
   else:
       print("errataはありません。")
       exit()      
@@ -297,35 +299,6 @@ def main():
       with open(lookup_file_path, 'w') as file:
           print(max_advisory_no, file=file)
       file.close()
-#
-# ダウンロード処理の実行
-#
-  for download_tkt in next_download_list:
-      synopsis=download_tkt['synopsis']
-      advisoryid=download_tkt['id']
-      rpm_packages = []
-      for offset in count(start=0, step=50):
-          packages_data = fetch_errata_packages(access_token, advisoryid, offset)
-          packages=packages_data['body']
-          pageinfo=packages_data['pagination']          
-          rpm_packages.extend(packages)
-          if pageinfo['count']==0 :
-             break
-      src_pkg_name='none'
-      for item in rpm_packages:
-          src_pkg_name=item['filename']
-          arch=item['arch']        
-          if arch == 'src':
-              src_pkg_name=item['filename']
-              break
-      print(f"{advisoryid} {src_pkg_name}")              
-      os.system(f"cd {advisoryid}; bash {advisoryid}.sh")
-      os.system(f"cd {advisoryid}; rm {advisoryid}.sh  {advisoryid}.json")
-      #os.system(f"cd {advisoryid}; mkdir SRPMS; mv *src.rpm SRPMS; mkdir X86_64; mv *rpm X86_64")
-      os.system(f"md5sum {advisoryid}/*rpm >{advisoryid}/{advisoryid}-md5sum.txt")
-      os.system(f"sha256sum {advisoryid}/*rpm >{advisoryid}/{advisoryid}-sha256sum.txt")
-      #os.system(f"LANG=C tree {advisoryid} >{advisoryid}/{advisoryid}-tree.txt")            
-
   #
   # main()終了
   

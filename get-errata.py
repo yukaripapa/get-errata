@@ -168,9 +168,9 @@ def main():
   # Extract only the packages that are for x86_64 architecture.
   # Define the pattern to match
   #   rhel-9-for-x86_64-baseos-aus
-  pattern = r"rhel-[89]-for-x86_64-[ab]"
+  pattern = r"^rhel-[89]-for-x86_64-[ab]"
   if args.a:
-      pattern = r"rhel-[89]-for-aarch64-[ab]"
+      pattern = r"^rhel-[89]-for-aarch64-[ab]"
   prevchecksum="e242e4a03507144df7ebd084d568fd2bf90d28b"
   # Iterate through each package in the original list
   for package in all_packages:
@@ -179,32 +179,47 @@ def main():
       # Check if any 'contentSets' element matches the pattern
       for content_set in package['contentSets']:
           if re.search(r"rhel-7", content_set):
-             pattern = r"rhel-7-server-" 
-          if re.search(pattern, content_set) and (prevchecksum != checksum):
+             pattern = r"^rhel-7-server-" 
+          if re.search(pattern, content_set) and (prevchecksum != checksum) :
               # Append the matching package to the 'matching_packages' list
               matching_packages.append(package)
               prevchecksum=checksum
+              break
 
   script_name = f"{filename[:-5]}.sh"
   with open(script_name, "w") as shellfile:
-    shellfile.write(f'export access_token={access_token};\n')
+    shellfile.write(f'export access_token={access_token};')
     shellfile.write(f'export fileno=1;\n')  
     
     fileno=1
     for download_pkg in matching_packages:
       checksum=download_pkg['checksum']
       filename=download_pkg['filename']
-      shellfile.write(f'export filename={filename};\n')
-      shellfile.write(f'export checksum={checksum};\n')
-      shellfile.write(f'echo $fileno:$filename;let fileno=fileno+1;\n')
+      shellfile.write(f'export filename={filename};')
+      shellfile.write(f'export checksum={checksum};')
+      shellfile.write(f'echo $fileno:$filename;let fileno=fileno+1;')
+      shellfile.write(f'sleep 2;')      
       curl_str=f"curl -H \"Authorization: Bearer $access_token\" \"https://api.access.redhat.com/management/v1/packages/$checksum/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o $filename\"}}'|sed -e 's/,//g'|sh ;\n"
       shellfile.write(curl_str)
 
   # Option '-n' just create scripts.
   if not args.n :
-      # just execute download script
-      os.system(f"bash {script_name}")
-      os.system(f"rm {script_name} {errata_id}.json")
+      # just execute download job
+      shellfile.close()
+      fileno=1
+      for download_pkg in matching_packages:
+        access_token = get_access_token(offline_token)
+        checksum=download_pkg['checksum']
+        filename=download_pkg['filename']
+        curl_str=f"curl -H \"Authorization: Bearer {access_token}\" \"https://api.access.redhat.com/management/v1/packages/{checksum}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {filename}\"}}'|sed -e 's/,//g'|sh ;\n"
+        print(f'{fileno}:{filename}')
+        os.system(curl_str)      
+        os.system('sleep 2;')
+        fileno+=1
+      
+      #os.system(f"rm {script_name} {errata_id}.json")
+
+
   #
   # making directory and move rpms.
   os.system(f"mkdir -p {errata_id}/SRPM; mv *src.rpm {errata_id}/SRPM")
