@@ -1,4 +1,4 @@
-#! /usr/bin/python
+#! /usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Tsuyoshi Nagata
 #
@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.py RHSA-2023:0951
 #
-VERSION="6.10"
+VERSION="6.50"
 #   
 #
 help_txt=f'\n# get-errata.py : a tool of rhn errata-page downloader.\n\n  ex. $ get-errata.py RHSA-2023:0951\n\n{VERSION}\n   Generate a shell script that downloads and executes the packages based on the errata number.\n'
@@ -222,16 +222,18 @@ def main():
 
   #
   # making directory and move rpms.
+  errata_id=errata_id.replace(':', '-')
   os.system(f"mkdir -p {errata_id}/SRPM; mv *src.rpm {errata_id}/SRPM")
   archdir='x86_64'
   if args.a:
       archdir='aarch64'
-  os.system(f"mkdir {errata_id}/{archdir}; mv *.rpm {errata_id}/{archdir}")  
+  os.system(f"mkdir -p {errata_id}/{archdir}; mv *.rpm {errata_id}/{archdir}")  
   #
   # making checksums
-  os.system(f"md5sum  {errata_id}/*/*rpm >{errata_id}/{errata_id}-md5sum.txt")
-  os.system(f"sha256sum  {errata_id}/*/*rpm >{errata_id}/{errata_id}-sha256sum.txt")
-  os.system(f"LANG=C tree {errata_id} >{errata_id}/{errata_id}-tree.txt")
+  new_errata_id = errata_id.replace(':', '-')
+  os.system(f"md5sum  {errata_id}/*/*rpm >{errata_id}/{new_errata_id}-md5sum.txt")
+  os.system(f"sha256sum  {errata_id}/*/*rpm >{errata_id}/{new_errata_id}-sha256sum.txt")
+  os.system(f"LANG=C tree {errata_id} >{errata_id}/{new_errata_id}-tree.txt")
 
   
 if __name__ == "__main__":
