@@ -6,7 +6,7 @@
 #
 # ex. $ get-errata.py RHSA-2023:0951
 #
-VERSION="6.50"
+VERSION="7.10"
 #   
 #
 help_txt=f'\n# get-errata.py : a tool of rhn errata-page downloader.\n\n  ex. $ get-errata.py RHSA-2023:0951\n\n{VERSION}\n   Generate a shell script that downloads and executes the packages based on the errata number.\n'
@@ -111,6 +111,8 @@ def main():
   #  parser.add_argument('-h', action='store_true', help='Display help')
   parser.add_argument('-a', action='store_true', help='arch is aarch64(default:x86_64)')
   parser.add_argument('-n', action='store_true', help='No download. just recreatea download script')
+  parser.add_argument('-g', action='store_true', help='Skip debug/debuginfo/src')
+  parser.add_argument('-s', action='store_true', help='src.rpm only')    
   parser.add_argument('-v', '--version', action='version', version=f'%(prog)s ver={VERSION}')
   parser.add_argument('RHSA', type=str, help='Red Hat Security Advisory identifier (e.g., RHSA-2024:4108)')
   # Parsing arguments
@@ -121,6 +123,10 @@ def main():
       print('aarch64 download')
   if args.n:
       print('Skip Downloading')  
+  if args.g:
+      print('Skip debug/debuginfo/src')  
+  if args.s:
+      print('Only src.rpm')  
 
   # Replace 'OFFLINE_TOKEN' with your actual refresh token
   #
@@ -178,8 +184,8 @@ def main():
 
       # Check if any 'contentSets' element matches the pattern
       for content_set in package['contentSets']:
-          if re.search(r"rhel-7", content_set):
-             pattern = r"^rhel-7-server-" 
+          if re.search(r"rhel-[67]", content_set):
+             pattern = r"^rhel-[67]-server-" 
           if re.search(pattern, content_set) and (prevchecksum != checksum) :
               # Append the matching package to the 'matching_packages' list
               matching_packages.append(package)
@@ -211,6 +217,18 @@ def main():
         access_token = get_access_token(offline_token)
         checksum=download_pkg['checksum']
         filename=download_pkg['filename']
+
+        # '-debug'/'src.rpm'が含まれているかチェック
+        if args.g and (('-debug' in filename) or ('src.rpm' in filename)) :
+            print(f'{fileno}:{filename} debug/src のダウンロードをスキップします')
+            fileno += 1
+            continue
+
+        # 'src.rpm'が含まれているかチェック
+        if args.s and (not 'src.rpm' in filename) :
+            print(f'{fileno}:{filename} のダウンロードをスキップします')
+            continue
+
         curl_str=f"curl -H \"Authorization: Bearer {access_token}\" \"https://api.access.redhat.com/management/v1/packages/{checksum}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {filename}\"}}'|sed -e 's/,//g'|sh ;\n"
         print(f'{fileno}:{filename}')
         os.system(curl_str)      
