@@ -242,7 +242,7 @@ def main():
   for count2 in range(0, 40, 1):
       error_count = 0
       time.sleep(5)  # 5秒間スリープ
-      for count1 in range(0, 30, 1):
+      for count1 in range(0, 80, 1):
           fetch_errata = fetch_errata_list(access_token, errata_id=f'RHSA-{lookup_no}')
           if fetch_errata is None:
               fetch_errata = fetch_errata_list(access_token, errata_id=f'RHBA-{lookup_no}')
@@ -257,7 +257,7 @@ def main():
               error_count = 0
           lookup_no=increment_lookup_no(lookup_no)
       print(f"Searching After {fetch_id} : {fetch_syn} ")               
-      if error_count == 30:
+      if error_count == 80:
           break
 
   download_count=0
