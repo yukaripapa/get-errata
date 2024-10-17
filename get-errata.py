@@ -232,6 +232,13 @@ def main():
         curl_str=f"curl -H \"Authorization: Bearer {access_token}\" \"https://api.access.redhat.com/management/v1/packages/{checksum}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {filename}\"}}'|sed -e 's/,//g'|sh ;\n"
         print(f'{fileno}:{filename}')
         os.system(curl_str)      
+        # Check if the file exists after the download
+        if not os.path.exists(filename):
+            os.system('sleep 5;')
+            # 再ダウンロード
+            os.system(curl_str)
+
+        # Add a small delay before next downloading
         os.system('sleep 2;')
         fileno+=1
       
