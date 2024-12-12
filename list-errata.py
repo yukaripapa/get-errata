@@ -178,8 +178,8 @@ def increment_lookup_no(lookup_no):
     ValueError: If the format of `lookup_no` is invalid.
   """
 
-  if not re.match(r"^\d{4}:\d{4}$", lookup_no):
-    raise ValueError(f"Invalid format for lookup_no: '{lookup_no}'.")
+#  if not re.match(r"^\d{4}:\d{4}$", lookup_no):
+#    raise ValueError(f"Invalid format for lookup_no: '{lookup_no}'.")
 
   year, no = lookup_no.split(":")
   no = int(no) + 1
@@ -239,6 +239,7 @@ def main():
   content_sets = [ "rhel-7-server-els-rpms", "rhel-8-for-x86_64-baseos-aus-rpms", "rhel-9-for-x86_64-baseos-aus-rpms" ]      
 
   errata_list = []
+  fetch_count = 0
   for count2 in range(0, 40, 1):
       error_count = 0
       time.sleep(5)  # 5秒間スリープ
@@ -254,24 +255,30 @@ def main():
               errata_list.append(add_item)
               fetch_id=add_item['id']
               fetch_syn=add_item['synopsis']
+              fetch_count += 1
               error_count = 0
+              # print(f"...... {fetch_id} : {fetch_syn} ")                             
           lookup_no=increment_lookup_no(lookup_no)
       print(f"Searching After {fetch_id} : {fetch_syn} ")               
       if error_count == 80:
           break
 
+  print(f"Total new {fetch_count} errata found. Searching kernel/glibc errata.")
   download_count=0
   for errata_tkt in errata_list:
+      fetch_id=errata_tkt['id']
+      fetch_syn=errata_tkt['synopsis']
+      # print(f"========= {fetch_id} : {fetch_syn} ")               
       if re.search(r'(kernel|glibc)', errata_tkt['synopsis']):
           if re.search(r'(?!kernel-rt)', errata_tkt['synopsis']):
               # Append the matching package to the 'download_list' list
               download_list.append(errata_tkt)
               advisoryid=errata_tkt['id']
               advisory_no = advisoryid[5:] # advisory_no ='2024:1234'
-              if advisory_no > max_advisory_no:
-                  download_count += 1
-                  max_advisory = errata_tkt
-                  max_advisory_no = advisory_no
+              # if advisory_no > max_advisory_no:
+              download_count += 1
+              max_advisory = errata_tkt
+              max_advisory_no = advisory_no
   print(f'errata {download_count} found.')
 
   next_download_list = []
