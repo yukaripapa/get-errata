@@ -218,8 +218,15 @@ def main():
         checksum=download_pkg['checksum']
         filename=download_pkg['filename']
 
+        # 'kernel-rt-debug'が含まれているかチェック
+        if ('kernel-rt-debug' in filename) :
+            print(f'{fileno}:{filename} kernel-rt-debug のダウンロードをスキップします')
+            fileno += 1
+            continue
+
         # '-debug'/'src.rpm'が含まれているかチェック
-        if args.g and (('-debug' in filename) or ('src.rpm' in filename)) :
+        # if args.g and (('-debug' in filename) or ('src.rpm' in filename)) :
+        if args.g and (('-debug' in filename)) :          
             print(f'{fileno}:{filename} debug/src のダウンロードをスキップします')
             fileno += 1
             continue
