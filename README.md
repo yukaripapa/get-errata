@@ -1,16 +1,17 @@
 # get-errata
+usage: get-errata.py [-h] [-a] [-n] [-g] [-s] [-v] RHSA
 
-get-errata.sh : a tool of rhn errata-page downloader.
+Sample Script with Options
 
-Usage bash -x get-errata.sh [options] errata-webpage.html  
-　　　ex. $ get-errata.sh RHSA-2023-0951.html
+positional arguments:
+  RHSA           Red Hat Security Advisory identifier (e.g., RHSA-2025:0055)
 
-Options:
-* -h help       
-* -a aarch64       
-* -d all download  
-* -n No Download. (just re-generate checksums.)
-
-
+optional arguments:
+* -h, --help     show this help message and exit
+* -a             arch is aarch64(default:x86_64)
+* -n             No download. just recreate download script
+* -g             Skip debug/debuginfo/src
+* -s             src.rpm only
+* -v, --version  show program's version number and exit
 
 
