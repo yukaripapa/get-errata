@@ -206,6 +206,9 @@ def has_error_member(fetch_erratas):
     # If `fetch_erratas` is not a dictionary object
     return False
 
+MAX_ERROR_COUNT = 80  # エラーが連続で発生する最大回数
+MAX_FETCH_COUNT = 40  # 最大フェッチ回数
+
 def main():
 # Replace 'YOUR_OFFLINE_TOKEN' with your actual refresh token
 # 環境変数からオフライントークンを取得
@@ -240,10 +243,10 @@ def main():
 
   errata_list = []
   fetch_count = 0
-  for count2 in range(0, 40, 1):
+  for count2 in range(0, MAX_FETCH_COUNT, 1):
       error_count = 0
       time.sleep(5)  # 5秒間スリープ
-      for count1 in range(0, 80, 1):
+      for count1 in range(0, MAX_ERROR_COUNT, 1):
           fetch_errata = fetch_errata_list(access_token, errata_id=f'RHSA-{lookup_no}')
           if fetch_errata is None:
               fetch_errata = fetch_errata_list(access_token, errata_id=f'RHBA-{lookup_no}')
@@ -260,7 +263,7 @@ def main():
               # print(f"...... {fetch_id} : {fetch_syn} ")                             
           lookup_no=increment_lookup_no(lookup_no)
       print(f"Searching After {fetch_id} : {fetch_syn} ")               
-      if error_count == 80:
+      if error_count == MAX_ERROR_COUNT:
           break
 
   print(f"Total new {fetch_count} errata found. Searching kernel/glibc errata.")
