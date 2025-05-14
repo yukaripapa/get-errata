@@ -4,12 +4,12 @@
 #
 # get-errata.py : a tool of rhn errata-page downloader.
 #
-# ex. $ get-errata.py RHSA-2023:0951
+# ex. $ get-errata.py RHBA-2025:6279
 #
-VERSION="7.10"
+VERSION="10.1"
 #   
 #
-help_txt=f'\n# get-errata.py : a tool of rhn errata-page downloader.\n\n  ex. $ get-errata.py RHSA-2023:0951\n\n{VERSION}\n   Generate a shell script that downloads and executes the packages based on the errata number.\n'
+help_txt=f'\n# get-errata.py : a tool of rhn errata-page downloader.\n\n  ex. $ get-errata.py RHBA-2025:6279\n\n{VERSION}\n   Generate a shell script that downloads and executes the packages based on the errata number.\n'
 
 
 from itertools import count
@@ -174,9 +174,9 @@ def main():
   # Extract only the packages that are for x86_64 architecture.
   # Define the pattern to match
   #   rhel-9-for-x86_64-baseos-aus
-  pattern = r"^rhel-[89]-for-x86_64-[ab]"
+  pattern = r"^rhel-[891]0?-for-x86_64-[ab]"
   if args.a:
-      pattern = r"^rhel-[89]-for-aarch64-[ab]"
+      pattern = r"^rhel-[891]0?-for-aarch64-[ab]"
   prevchecksum="e242e4a03507144df7ebd084d568fd2bf90d28b"
   # Iterate through each package in the original list
   for package in all_packages:
