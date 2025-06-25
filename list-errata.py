@@ -296,7 +296,7 @@ def main():
           next_download_list.append(errata_tkt)  
           print(f"{advisoryid} {synopsis}")
           # ダウンロード実行
-          os.system(f"mkdir {advisoryid}; cd {advisoryid}; ../get-errata/get-errata.py  {advisoryid}")
+          os.system(f"mkdir {advisoryid}; cd {advisoryid}; ../get-errata/get-errata.py -g {advisoryid}")
   if next_download_list :
       print("以上のerrataのダウンロードを実行しました。")
   else:
