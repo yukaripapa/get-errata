@@ -206,8 +206,8 @@ def has_error_member(fetch_erratas):
     # If `fetch_erratas` is not a dictionary object
     return False
 
-MAX_ERROR_COUNT = 80  # エラーが連続で発生する最大回数
-MAX_FETCH_COUNT = 40  # 最大フェッチ回数
+MAX_ERROR_COUNT = 160  # エラーが連続で発生する最大回数
+MAX_FETCH_COUNT =  40  # 最大フェッチ回数
 
 def main():
 # Replace 'YOUR_OFFLINE_TOKEN' with your actual refresh token
