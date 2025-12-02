@@ -119,7 +119,7 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
                 if len(parts)>1: bullets.append(f" * {parts[1].strip()} ({c})"); break
     cve_section="\n".join(bullets)
     cve_links="\n".join([f" - {c}\n          https://access.redhat.com/security/cve/{c}" for c in cves])
-    dept = contacts.get('department','MCS)OSSxAIテクノロジー事業部')
+    dept = contacts.get('department','DEPARTMENT')
     approver = contacts.get('approver',{})
     issuer = contacts.get('issuer',{})
     recipients = contacts.get('recipients',[])
