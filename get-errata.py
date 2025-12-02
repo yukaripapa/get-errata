@@ -107,7 +107,11 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         for k,v in variants.items():
             if k in summary: det=v; break
         if det:
-            rhel_major = fv.split('.')[0]; vl_display=f"v.{fv}"; os_display=f"RHEL{rhel_major}(Intel64)[※1]"; footer_note=f"[※1] RHEL {det}({fv}) 環境"
+            rhel_major = fv.split('.')[0]; vl_display=f"v.{fv}"; os_display=f"RHEL{rhel_major}(Intel64)[※1]"; footer_note=f"[※1] RHEL {det}({fv}) 環境"; os_display2=f"RHEL{rhel_major}(Intel64)[※2]"
+            footer_note2="";version_patch_level2=""
+            if det and "Extended Update Support" in det:
+                footer_note2=f"[※2] RHEL Advanced mission critical Update Support({fv}) 環境";
+                version_patch_level2=f"Red Hat Enterprise Linux {rhel_major} (for Intel64), {vl_display}, {os_display2}, {pkg_name}, {errata_id}"
     date = datetime.now().strftime('%Y.%m.%d'); date_jp = datetime.now().strftime('%Y年%m月%d日')
     cves = [c.strip() for c in body.get('cves','').strip().split() if c.strip().startswith('CVE-')]
     bullets=[]
@@ -118,7 +122,7 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
                 parts=t.split(c,1);
                 if len(parts)>1: bullets.append(f" * {parts[1].strip()} ({c})"); break
     cve_section="\n".join(bullets)
-    cve_links="\n".join([f" - {c}\n          https://access.redhat.com/security/cve/{c}" for c in cves])
+    cve_links="\n".join([f"  - {c}\n          https://access.redhat.com/security/cve/{c}" for c in cves])
     dept = contacts.get('department','DEPARTMENT')
     approver = contacts.get('approver',{})
     issuer = contacts.get('issuer',{})
@@ -143,6 +147,8 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         'OS_DISPLAY': os_display,
         'RHEL_MAJOR': rhel_major,
         'FOOTER_NOTE': footer_note,
+        'FOOTER_NOTE2': footer_note2,
+        'VERSION_PATCH_LEVEL2': version_patch_level2,
         'CVES_SECTION': cve_section,
         'CVES_LINKS': cve_links,
         'DATE': date,
@@ -152,7 +158,15 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
     return Template(tpl_text).safe_substitute(data)
 
 def main():
-    ap = argparse.ArgumentParser(description='Red Hat Errata downloader + security report generator')
+    ap = argparse.ArgumentParser(
+        description=(
+            "Red Hat Errata downloader + security report generator\n"
+            ""
+            "example: ./get-errata.py -n RHSA-2025:22392 -r L25-0452-00 # Generate report\n"
+            "         ./get-errata.py -g RHSA-2025:22392                # Downloading basic rpms\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument('-a', action='store_true', help='arch is aarch64(default:x86_64)')
     ap.add_argument('-n', action='store_true', help='No download. just recreate a download script')
     ap.add_argument('-g', action='store_true', help='Skip debug/debuginfo')
@@ -210,23 +224,6 @@ def main():
             if re.search(r"rhel-[67]", cs): pat = r"^rhel-[67]-server-"
             if re.search(pat, cs) and (prev!=c): match.append(p); prev=c; break
 
-    #sh = f"{filename[:-5]}.sh"
-    #with open(sh,'w',encoding='utf-8') as sf:
-    #    sf.write(f'export access_token={access_token};')
-    #    sf.write('export fileno=1;\n')
-    #    for d in match:
-    #        c=d['checksum']; fn=d['filename']
-    #        sf.write(f'export filename={fn};')
-    #        sf.write(f'export checksum={c};')
-    #        sf.write('echo $fileno:$filename;let fileno=fileno+1;')
-    #        sf.write('sleep 2;')
-    #        sf.write("curl -H "Authorization: Bearer $access_token" "https://api.access.redhat.com/management/v1/packages/$checksum/download"
-    # jq 
-    # grep href.:
-    # gawk '{{print "curl " $2 " -o $filename"}}'
-    # sed -e 's/,//g'
-    # sh ;
-    # ")
 
     if not args.n:
         crit=[]; fno=1
