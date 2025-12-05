@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Tsuyoshi Nagata
 #
-VERSION = "10.5"
+VERSION = "10.7"
 from itertools import count
 import re, os, json, requests, time, sys, argparse, hashlib
 from datetime import datetime
@@ -94,6 +94,38 @@ def load_template(path):
         print(f"Warning: template load failed from {path}: {e}")
         return None
 
+def check_affected_products(info):
+    """
+    Check if affectedProducts matches the target criteria for report generation.
+    Returns True if report should be generated, False otherwise.
+    """
+    if not info or 'body' not in info:
+        return False
+    
+    products = info['body'].get('affectedProducts', [])
+    
+    # Report generation whitelist (Exact matches required)
+    target_products = {
+        "Red Hat Enterprise Linux Server - AUS",
+        "Red Hat Enterprise Linux for x86_64 - Extended Update Support Extension",
+        "Red Hat Enterprise Linux for x86_64",
+        "Red Hat Enterprise Linux Server - Extended Life Cycle Support"
+    }
+    
+    print("Checking affected products:")
+    match_found = False
+    for p in products:
+        # Check for exact match.
+        # This satisfies the requirement to terminate with "x86_64$" for the specific product,
+        # preventing matches with variants like "... - Update Services for SAP Solutions".
+        if p in target_products:
+            print(f" [MATCH] {p}")
+            match_found = True
+        else:
+            print(f" [SKIP]  {p}")
+            
+    return match_found
+
 def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_text):
     if not info or 'body' not in info: return 'Error: Invalid errata information'
     body = info['body']; summary = body.get('summary','')
@@ -168,6 +200,8 @@ def main():
     ap.add_argument('-c','--contacts', type=str, default=None, help='Path to contacts.json')
     ap.add_argument('-t','--template', type=str, default=None, help='Path to security_report_template.txt')
     ap.add_argument('-o','--outdir', type=str, default='.', help='Output directory for report')
+    ap.add_argument('--force-report', action='store_true', help='Force report generation regardless of affected products')
+    ap.add_argument('--force-download', action='store_true', help='Force RPM download regardless of affected products')
     ap.add_argument('RHSA', type=str, help='Red Hat Security Advisory identifier (e.g., RHSA-2024:4108)')
     args = ap.parse_args()
 
@@ -197,12 +231,27 @@ def main():
     contacts = load_contacts(contacts_path)
     tpl_text = load_template(template_path)
     temp_name = errata_id.split(":")[1]
+    
     if info:
-        report = generate_security_report(errata_id, info, pkgs, f"L25-{temp_name}-00", contacts, tpl_text)
-        _Path(args.outdir).mkdir(parents=True, exist_ok=True)
-        out = _Path(args.outdir) / f"L25-{temp_name}-00.txt"
-        with open(out,'w',encoding='utf-8') as f: f.write(report)
-        print(f"Security report generated: {out}")
+        # Check filtering condition for Report
+        should_generate = False
+        if args.force_report:
+            print("Notice: --force-report enabled. Skipping product check.")
+            should_generate = True
+        else:
+            if check_affected_products(info):
+                should_generate = True
+            else:
+                print("\n[INFO] Report generation skipped.")
+                print("Reason: Affected products did not match the specific target list.")
+                print("Tip: Use --force-report to bypass this check.\n")
+
+        if should_generate:
+            report = generate_security_report(errata_id, info, pkgs, f"L25-{temp_name}-00", contacts, tpl_text)
+            _Path(args.outdir).mkdir(parents=True, exist_ok=True)
+            out = _Path(args.outdir) / f"L25-{temp_name}-00.txt"
+            with open(out,'w',encoding='utf-8') as f: f.write(report)
+            print(f"Security report generated: {out}")
 
     match=[]
     for it in pkgs:
@@ -235,7 +284,24 @@ def main():
     # sh ;
     # ")
 
-    if not args.n:
+    # Download filtering check
+    should_download = False
+    if args.n:
+        should_download = False
+    else:
+        if args.force_download:
+             print("Notice: --force-download enabled. Skipping product check for download.")
+             should_download = True
+        elif info and check_affected_products(info):
+             should_download = True
+        elif not info:
+             print("Warning: Errata info not available. Skipping download safety check requires --force-download.")
+        else:
+             print("\n[INFO] RPM Download skipped.")
+             print("Reason: Affected products did not match the specific target list.")
+             print("Tip: Use --force-download to bypass this check.\n")
+
+    if should_download:
         crit=[]; fno=1
         for d in match:
             tok = get_access_token(offline_token)
