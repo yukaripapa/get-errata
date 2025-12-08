@@ -1,322 +1,248 @@
-#! /usr/bin/python
+#!/usr/bin/python
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Tsuyoshi Nagata
-#
-# list-errata.py : a collector of rhn errata tickets.
-#
-# ex. $ list-errata.py
-#
-#   rhnからダウンロードが必要なerrata番号の一覧を取得する。
-#
-# 実行条件
-# ・エラッタ取得(get-errata.py)スクリプトが存在する事。
-# ・最終エラッタ取得ファイル(last_lookup.txt)が存在する事。
-# ・環境変数OFFLINE_TOKENが設定されている事。
-#
-#  list-errata.py
-#         +get-errata
-#                 +-lookup_errata.txt
-#                 +-get-errata.py
+# list-errata_v3_4.py
+# - Reads default-support-list.txt at runtime
+# - Package = 2nd word after severity prefix in synopsis
+# - Match rule: exact match OR base-before-colon match (e.g., 'gimp:2.8' matches 'gimp')
+# - Mark only when package matches AND synopsis has Important/Critical
+# - When mark, run: ./get-errata.py -n {errata-id}
+# - ALWAYS advance lookup_no each loop
 
-
-from itertools import count
 import re
 import os
 import json
 import requests
-import subprocess
 import time
-import sys
+import argparse
+
+TOKEN_URL = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
+API_BASE = "https://api.access.redhat.com/management/v1"
+REPORT_MARK = "need-action to generate report"
+SUPPORT_LIST_PATH = 'default-support-list.txt'
+
 
 def json_value(data, key):
-  """
-  Extracts the value of a specific key from a JSON string.
+    try:
+        parsed_data = json.loads(data)
+        return parsed_data.get(key)
+    except json.JSONDecodeError:
+        return None
 
-  Args:
-      data: The JSON string to parse.
-      key: The key of the value to extract.
-
-  Returns:
-      The value associated with the key, or None if not found.
-  """
-  try:
-    parsed_data = json.loads(data)
-    return parsed_data.get(key)
-  except json.JSONDecodeError:
-    print("Error: Invalid JSON data provided.")
-    return None
 
 def get_access_token(offline_token):
-  """
-  Fetches a new access token using the provided refresh token.
+    payload = {
+        "grant_type": "refresh_token",
+        "client_id": "rhsm-api",
+        "refresh_token": offline_token,
+    }
+    r = requests.post(TOKEN_URL, data=payload)
+    r.raise_for_status()
+    token = json_value(r.text, "access_token")
+    if not token:
+        raise RuntimeError('access_token を取得できませんでした。')
+    return token
 
-  Args:
-      offline_token: The refresh token to use for obtaining a new access token.
 
-  Returns:
-      The access token retrieved from the server, or None on error.
-  """
-  url = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
-  payload = {
-    "grant_type": "refresh_token",
-    "client_id": "rhsm-api",
-    "refresh_token": offline_token
-  }
+def fetch_errata(access_token, errata_id):
+    url = f"{API_BASE}/errata/{errata_id}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    r = requests.get(url, headers=headers)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return r.json()
 
-  try:
-    response = requests.post(url, data=payload)
-    response.raise_for_status()  # Raise an exception for non-2xx status codes
 
-    # Extract the access token from the JSON response
-    data = response.text
-    access_token = json_value(data, "access_token")
-    return access_token
-  except requests.exceptions.RequestException as e:
-    print(f"Error: Failed to retrieve access token. {e}")
-    return None
+def load_support_list(path: str) -> set:
+    names = []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                s = line.strip()
+                if s and not s.startswith('#'):
+                    names.append(s.lower())
+    except FileNotFoundError:
+        pass
+    return set(names)
 
-def fetch_errata_packages(access_token, errata_id, offset):
-  """
-  Fetches Red Hat Errata packages using the specified access token and offset.
 
-  Args:
-      access_token: The access token to use for authentication.
-      errata_id: The ID of the errata to query.
-      offset: The offset for paginating the results.
+def synopsis_has_high(synopsis: str) -> bool:
+    s = (synopsis or '').lower()
+    return ('important' in s) or ('critical' in s)
 
-  Returns:
-      The JSON response from the API call, or None on error.
-  """
-  url = f"https://api.access.redhat.com/management/v1/errata/{errata_id}/packages/?offset={offset}"
-  headers = {"Authorization": f"Bearer {access_token}"}
 
-  try:
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()  # Raise an exception for non-2xx status codes
-    return response.json()
-  except requests.exceptions.RequestException as e:
-    print(f"Error: Failed to fetch errata packages. {e}")
-    return None
+def package_from_synopsis(synopsis: str) -> str:
+    t = (synopsis or '').strip()
+    m = re.match(r"^(Important|Critical|Moderate):\s*(.*)$", t, flags=re.IGNORECASE)
+    if m:
+        t = m.group(2).strip()
+    m2 = re.match(r"^([A-Za-z0-9_.:-]+)", t)
+    return m2.group(1).lower() if m2 else ''
 
-def fetch_errata_list(access_token, errata_id):
-  """
-  Fetches Red Hat Errata packages using the specified access token and offset.
 
-  Args:
-      access_token: The access token to use for authentication.
-      content_set: The strings of the product-groups to query.
-        rhel-7-server-els-rpms
-        rhel-8-for-x86_64-baseos-aus-rpms
-        rhel-9-for-x86_64-baseos-aus-rpms
+def base_before_colon(token: str) -> str:
+    # Return substring before ':' if present; else the original token
+    if token is None:
+        return ''
+    parts = token.split(':', 1)
+    return parts[0]
 
-  Returns:
-      The JSON response from the API call, or None on error.
-  """
-  url = f"https://api.access.redhat.com/management/v1/errata/{errata_id}"
-  headers = {"Authorization": f"Bearer {access_token}"}
 
-  try:
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()  # Raise an exception for non-2xx status codes
-    return response.json()
-  except requests.exceptions.RequestException as e:
-    #print(f"Error: Failed to fetch errata list. {e}")
-    return None
-  
-def write_to_json(filename, data):
-  """
-  Appends the provided data to an existing JSON file.
+def should_mark(synopsis: str, support_names: set) -> bool:
+    pkg = package_from_synopsis(synopsis)
+    base = base_before_colon(pkg)
+    # exact match OR base-before-colon match
+    pkg_match = (pkg in support_names) or (base in support_names)
+    return bool(pkg_match and synopsis_has_high(synopsis))
 
-  Args:
-      filename: The name of the JSON file to append to.
-      data: The JSON data to append.
-  """
-  outfile = open(filename, 'r+')
-  # Read existing data
-  #existing_data = json.loads(outfile)
-  # Append new data
-  package_list=data
-  #print(f"\nexistin_data {existing_data}\n")
-  #existing_data.extend(package_list)
-  # Seek to the beginning of the file
-  outfile.seek(0)
-  # Overwrite with updated data
-  json.dump(package_list, outfile, indent=4)
 
-def download_package(access_token, checksum, filename, package):
-  durl = f"https://api.access.redhat.com/management/v1/packages/{checksum}"
-  durlheaders = {"Authorization": f"Bearer {access_token}"}
-  print(f"durl: {durl} {durlheaders}\n")
-  try:
-    response = requests.get(durl, headers=durlheaders)
-    response.raise_for_status()  # Raise an exception for non-2xx status codes
-    return response.json()
-  except requests.exceptions.RequestException as e:
-    print(f"Error: Failed to fetch errata packages. {e}")
-    return None
+def run_report(advisory_id: str):
+    if not advisory_id:
+        return
+    cmd = f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt -n {advisory_id}"
+    print(f"[REPORT] run: {cmd}")
+    try:
+        os.system(cmd)
+    except Exception as e:
+        print(f"[REPORT] failed: {e}")
 
-  #try:
-  #  dresponse = requests.get(durl, headers=headers)
-  #  print("dresponse {dresponse}")
-  #  dresponse.raise_for_status()  # Raise an exception for non-2xx status codes
-  #  return dresponse.json()
-  #except drequests.exceptions.RequestException as e:
-  #  print(f"Error: Failed to fetch download packages. {e}")
-  #  return None
 
-def increment_lookup_no(lookup_no):
-  """
-  Increments the last four digits of `lookup_no` by one and returns a new string.
+def increment_lookup_no(lookup_no: str) -> str:
+    year, no = lookup_no.split(":")
+    no_i = int(no) + 1
+    return f"{year}:{str(no_i).zfill(4)}"
 
-  Args:
-    lookup_no: A string in the format "YYYY:NNNN".
+# New: decrement number part (one step back)
+def decrement_lookup_no(lookup_no: str) -> str:
+    year, no = lookup_no.split(":")
+    no_i = max(1, int(no) - 1)
+    return f"{year}:{str(no_i).zfill(4)}"
+    year, no = lookup_no.split(":")
+    no_i = int(no) + 1
+    return f"{year}:{str(no_i).zfill(4)}"
 
-  Returns:
-    A new string in the format "YYYY:NNNN".
 
-  Raises:
-    ValueError: If the format of `lookup_no` is invalid.
-  """
+MAX_ERROR_COUNT = 300
+MAX_FETCH_COUNT = 40
 
-#  if not re.match(r"^\d{4}:\d{4}$", lookup_no):
-#    raise ValueError(f"Invalid format for lookup_no: '{lookup_no}'.")
-
-  year, no = lookup_no.split(":")
-  no = int(no) + 1
-  new_no = str(no).zfill(4)
-  return f"{year}:{new_no}"
-
-def has_error_member(fetch_erratas):
-  """
-  Determines whether the 'error' member is defined in the dictionary object `fetch_erratas`.
-
-  Args:
-    fetch_erratas: A dictionary object.
-
-  Returns:
-    True if the 'error' member exists, False otherwise.
-  """
-
-  if fetch_erratas is None:
-    return False
-
-  try:
-    return 'error' in fetch_erratas
-  except TypeError:
-    # If `fetch_erratas` is not a dictionary object
-    return False
-
-MAX_ERROR_COUNT = 160  # エラーが連続で発生する最大回数
-MAX_FETCH_COUNT =  40  # 最大フェッチ回数
 
 def main():
-# Replace 'YOUR_OFFLINE_TOKEN' with your actual refresh token
-# 環境変数からオフライントークンを取得
-#
-# 以下のurlから事前にオフライントークンを作成しておく。（30日間有効）
-# https://access.redhat.com/management/api
-#
-  offline_token = os.getenv('OFFLINE_TOKEN')
-  if not offline_token:
-    raise Exception('OFFLINE_TOKEN 環境変数が設定されていません。')
-  access_token = get_access_token(offline_token)
-  #if len(sys.argv) > 1:
-  #  errata_id = sys.argv[1]
-  #else:
-  #  print("RHSA番号を指定してください")
-  #  exit()
+    parser = argparse.ArgumentParser(description='Red Hat Errata crawler wrapper')
+    parser.add_argument('--reverse-start', '-R', type=str,
+                        help='Start advisory ID to scan backward (e.g., RHSA-2025:22802)')
+    parser.add_argument('--reverse-count', type=int, default=1000,
+                        help='How many IDs to go backward (default: 1000)')
+    parser.add_argument('--sleep', type=int, default=5,
+                        help='Sleep seconds between API calls (default: 5)')
+    args = parser.parse_args()
 
-  # last_lookup変数に最後にダウンロードしたerrata番号を読み込む
-  lookup_file_path = "get-errata/last_lookup.txt"
-  try:
-    with open(lookup_file_path, "r") as file:
-        last_lookup = file.read().strip()  # ファイルの内容を読み込み、改行を削除
-        print(f"チェック済みerrata番号: {last_lookup}")
-  except FileNotFoundError:
-    print(f"{file_path} が見つかりませんでした。")
-  last_lookup = last_lookup[5:] # lookup_no ='2024:1234'
-  max_advisory_no = last_lookup
-  lookup_no = last_lookup
-  # Initialize an empty list to store all packages
-  download_list = []
-  content_sets = [ "rhel-7-server-els-rpms", "rhel-8-for-x86_64-baseos-aus-rpms", "rhel-9-for-x86_64-baseos-aus-rpms" ]      
+    offline_token = os.getenv('OFFLINE_TOKEN')
+    if not offline_token:
+        raise RuntimeError('OFFLINE_TOKEN 環境変数が設定されていません。')
+    access_token = get_access_token(offline_token)
+    support_names = load_support_list(SUPPORT_LIST_PATH)
+    if not support_names:
+        print('[WARN] default-support-list.txt が見つからないか空です。support マッチ無しで続行します。')
 
-  errata_list = []
-  fetch_count = 0
-  for count2 in range(0, MAX_FETCH_COUNT, 1):
-      error_count = 0
-      time.sleep(5)  # 5秒間スリープ
-      for count1 in range(0, MAX_ERROR_COUNT, 1):
-          fetch_errata = fetch_errata_list(access_token, errata_id=f'RHSA-{lookup_no}')
-          if fetch_errata is None:
-              fetch_errata = fetch_errata_list(access_token, errata_id=f'RHBA-{lookup_no}')
-          if fetch_errata is None:
-              error_count = error_count + 1
-          else:
-              add_item=fetch_errata['body']
-              #print(f'{add_item}')
-              errata_list.append(add_item)
-              fetch_id=add_item['id']
-              fetch_syn=add_item['synopsis']
-              fetch_count += 1
-              error_count = 0
-              # print(f"...... {fetch_id} : {fetch_syn} ")                             
-          lookup_no=increment_lookup_no(lookup_no)
-      print(f"Searching After {fetch_id} : {fetch_syn} ")               
-      if error_count == MAX_ERROR_COUNT:
-          break
+    # === Reverse Back-Report mode ===
+    if args.reverse_start:
+        # Accept either RHSA-YYYY:NNNN or RHBA-YYYY:NNNN as starting point
+        start_id = args.reverse_start.strip()
+        if not re.match(r'^(RHSA|RHBA)-\d{4}:\d{5}$', start_id):
+            raise RuntimeError('書式エラー: --reverse-start は RHSA-YYYY:NNNN または RHBA-YYYY:NNNN を指定してください。')
+        start_no = start_id[5:]  # YYYY:NNNN
+        current_no = start_no
+        print(f"[Reverse] 指定開始ID: {start_id} から {args.reverse_count} 件分を逆方向にスキャンします (レポート生成のみ)。")
+        for i in range(args.reverse_count):
+            # Try both RHSA and RHBA for the current number
+            found_any = False
+            for typ in ('RHSA', 'RHBA'):
+                advisory_key = f'{typ}-{current_no}'
+                data = fetch_errata(access_token, advisory_key)
+                if data is None:
+                    continue
+                body = data.get('body', {})
+                advisory_id = body.get('id', f'UNKNOWN-{current_no}')
+                synopsis = body.get('synopsis', '')
+                found_any = True if should_mark(synopsis, support_names) else False
+                # Match generate report ONLY (no download). get-errata.py -n already skips download.
+                if found_any is True:
+                    print(f"[Reverse] {advisory_id} : {synopsis} => レポート生成")
+                    run_report(advisory_id)
+                    time.sleep(args.sleep)
+            # Go to previous number regardless of found status
+            current_no = decrement_lookup_no(current_no)
+        print('[Reverse] 逆スキャン完了。')
+        return
 
-  print(f"Total new {fetch_count} errata found. Searching kernel/glibc errata.")
-  download_count=0
-  for errata_tkt in errata_list:
-      fetch_id=errata_tkt['id']
-      fetch_syn=errata_tkt['synopsis']
-      # print(f"========= {fetch_id} : {fetch_syn} ")               
-      if re.search(r'(kernel|glibc)', errata_tkt['synopsis']):
-          if re.search(r'(?!kernel-rt)', errata_tkt['synopsis']):
-              # Append the matching package to the 'download_list' list
-              download_list.append(errata_tkt)
-              advisoryid=errata_tkt['id']
-              advisory_no = advisoryid[5:] # advisory_no ='2024:1234'
-              # if advisory_no > max_advisory_no:
-              download_count += 1
-              max_advisory = errata_tkt
-              max_advisory_no = advisory_no
-  print(f'errata {download_count} found.')
+    # === Default forward-scan behavior ===
+    lookup_file_path = "get-errata/last_lookup.txt"
+    try:
+        with open(lookup_file_path, 'r', encoding='utf-8') as f:
+            last_lookup_full = f.read().strip()
+            print(f"チェック済みerrata番号: {last_lookup_full}")
+    except FileNotFoundError:
+        print(f"{lookup_file_path} が見つかりません。")
+        return
 
-  next_download_list = []
-  for errata_tkt in download_list:
-      synopsis=errata_tkt['synopsis']
-      advisoryid=errata_tkt['id']
-      advisory_no = advisoryid[5:]
-      if advisory_no > last_lookup :
-          if advisory_no > max_advisory_no:
-              max_advisory = errata_tkt
-              max_advisory_no = advisory_no
-          next_download_list.append(errata_tkt)  
-          print(f"{advisoryid} {synopsis}")
-          # ダウンロード実行
-          os.system(f"mkdir {advisoryid}; cd {advisoryid}; ../get-errata/get-errata.py -g {advisoryid}")
-  if next_download_list :
-      print("以上のerrataのダウンロードを実行しました。")
-  else:
-      print("errataはありません。")
-      exit()      
-#
-# 最終ダウンロード情報を更新する
-  if max_advisory_no > last_lookup :
-      max_advisory_no = str(max_advisory['id'])
-      with open(lookup_file_path, 'w') as file:
-          print(max_advisory_no, file=file)
-      file.close()
-  #
-  # main()終了
-  
-#
-# main()の実行
-if __name__ == "__main__":
-  main()
+    last_lookup = last_lookup_full[5:]
+    lookup_no = increment_lookup_no(last_lookup)  # 成否に関係なく前進
+    errata_list = []
+    fetch_count = 0
+    for _ in range(0, MAX_FETCH_COUNT):
+        error_count = 0
+        time.sleep(args.sleep)
+        for _ in range(0, MAX_ERROR_COUNT):
+            data = fetch_errata(access_token, f'RHSA-{lookup_no}')
+            if data is None:
+                data = fetch_errata(access_token, f'RHBA-{lookup_no}')
+            if data is None:
+                error_count += 1
+            else:
+                body = data.get('body', {})
+                advisory_id = body.get('id', f'UNKNOWN-{lookup_no}')
+                synopsis = body.get('synopsis', '')
+                fetch_count += 1
+                error_count = 0
+                errata_list.append(body)
+                mark = REPORT_MARK if should_mark(synopsis, support_names) else ''
+                display_id = advisory_id if not mark else f"**{advisory_id}**"
+                print(f"Scanning {display_id} : {synopsis} {mark}")
+                if mark == REPORT_MARK:
+                    run_report(advisory_id)
+            lookup_no = increment_lookup_no(lookup_no)  # 成否に関係なく前進
+            if error_count == MAX_ERROR_COUNT:
+                break
+        print(f"Total new {fetch_count} errata found.")
+        break
 
-
-  
-
+    # optional: kernel/glibc download path retained
+    download_list = []
+    for e in errata_list:
+        syn = e.get('synopsis', '')
+        if re.search(r'(kernel|glibc)', syn) and not re.search(r'kernel-rt', syn):
+            download_list.append(e)
+    next_download_list = []
+    for e in download_list:
+        synopsis = e.get('synopsis', '')
+        advisory_id = e.get('id', '')
+        advisory_no = advisory_id[5:] if advisory_id else ''
+        if advisory_no > last_lookup:
+            next_download_list.append(e)
+        mark = REPORT_MARK if should_mark(synopsis, support_names) else ''
+        display_id = advisory_id if not mark else f"**{advisory_id}**"
+        print(f"{display_id} {synopsis} {mark}")
+        if mark == REPORT_MARK:
+            run_report(advisory_id)
+        os.system(f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt -g {advisory_id}")
+    if next_download_list:
+        print("以上のerrataのダウンロードを実行しました。")
+    else:
+        print("errataはありません。")
+    if next_download_list:
+        last_id = next_download_list[-1].get('id', '')
+        if last_id:
+            with open(lookup_file_path, 'w', encoding='utf-8') as f:
+                print(last_id, file=f)
+if __name__ == '__main__':
+    main()
