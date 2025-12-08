@@ -108,6 +108,7 @@ def check_affected_products(info):
     target_products = {
         "Red Hat Enterprise Linux Server - AUS",
         "Red Hat Enterprise Linux for x86_64 - Extended Update Support Extension",
+        "Red Hat Enterprise Linux for x86_64 - Extended Update Support",        
         "Red Hat Enterprise Linux for x86_64",
         "Red Hat Enterprise Linux Server - Extended Life Cycle Support"
     }
