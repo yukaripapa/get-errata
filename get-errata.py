@@ -8,6 +8,7 @@ import re, os, json, requests, time, sys, argparse, hashlib
 from datetime import datetime
 from string import Template
 from pathlib import Path as _Path
+from datetime import timezone
 
 def json_value(data, key):
     try:
@@ -53,10 +54,9 @@ def is_critical_kernel_file(fn):
 def download_file_with_retry(tok, checksum, fn, max_retries=3):
     for a in range(max_retries):
         if a>0: print(f" Retry {a}/{max_retries}..."); time.sleep(5)
-        cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{checksum}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {fn}\"}}'|sed -e 's/,//g'|sh"
+        cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{c}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {fn}\"}}'|sed -                                         e 's/,//g'|sh"
         os.system(cmd)
         if verify_file_checksum(fn, checksum): return True
-        # if os.path.exists(fn): os.remove(fn)
     return False
 
 def extract_package_name(info):
@@ -76,7 +76,7 @@ def load_contacts(path):
         with open(path,'r',encoding='utf-8') as f: return json.load(f)
     except Exception as e:
         print(f"Warning: contacts load failed from {path}: {e}")
-        return {}
+    return {}
 
 def build_recipients_section(recipients):
     lines=[""]
@@ -92,7 +92,7 @@ def load_template(path):
         with open(path,'r',encoding='utf-8') as f: return f.read()
     except Exception as e:
         print(f"Warning: template load failed from {path}: {e}")
-        return None
+    return None
 
 def check_affected_products(info):
     """
@@ -101,31 +101,56 @@ def check_affected_products(info):
     """
     if not info or 'body' not in info:
         return False
-    
     products = info['body'].get('affectedProducts', [])
-    
     # Report generation whitelist (Exact matches required)
     target_products = {
         "Red Hat Enterprise Linux Server - AUS",
         "Red Hat Enterprise Linux for x86_64 - Extended Update Support Extension",
-        "Red Hat Enterprise Linux for x86_64 - Extended Update Support",        
+        "Red Hat Enterprise Linux for x86_64 - Extended Update Support",
         "Red Hat Enterprise Linux for x86_64",
         "Red Hat Enterprise Linux Server - Extended Life Cycle Support"
     }
-    
     print("Checking affected products:")
     match_found = False
     for p in products:
-        # Check for exact match.
-        # This satisfies the requirement to terminate with "x86_64$" for the specific product,
-        # preventing matches with variants like "... - Update Services for SAP Solutions".
         if p in target_products:
             print(f" [MATCH] {p}")
             match_found = True
         else:
-            print(f" [SKIP]  {p}")
-            
+            print(f" [SKIP] {p}")
     return match_found
+
+def _parse_iso_dt(text):
+    try:
+        # Accept 'YYYY-MM-DDTHH:MM:SSZ' or with offset
+        if text.endswith('Z'):
+            text = text.replace('Z', '+00:00')
+        return datetime.fromisoformat(text)
+    except Exception:
+        return None
+
+def extract_issue_datetime(info):
+    """Extract issued datetime (UTC) from errata info. Uses body['issued'] only."""
+    if not info or 'body' not in info:
+        return None
+    body = info['body']
+    val = body.get('issued')
+    if isinstance(val, str):
+        dt = _parse_iso_dt(val)
+        if dt:
+            return dt.astimezone(timezone.utc)
+    return None
+
+def set_file_timestamp_to_issue(path, issue_dt):
+    """Set atime/mtime of file to issue_dt. Creation time is not modifiable on Linux."""
+    try:
+        if issue_dt is None:
+            return False
+        ts = issue_dt.timestamp()
+        os.utime(path, (ts, ts))
+        return True
+    except Exception:
+        return False
 
 def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_text):
     if not info or 'body' not in info: return 'Error: Invalid errata information'
@@ -143,9 +168,9 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
             if k in summary: det=v; break
         if det:
             rhel_major = fv.split('.')[0]; vl_display=f"v.{fv}"; os_display=f"RHEL{rhel_major}(Intel64)[※1]"; footer_note=f"[※1] RHEL {det}({fv}) 環境"; os_display2=f"RHEL{rhel_major}(Intel64)[※2]"
-            if det and "Extended Update Support" in det:
-                footer_note2=f"[※2] RHEL Advanced mission critical Update Support({fv}) 環境";
-                version_patch_level2=f"Red Hat Enterprise Linux {rhel_major} (for Intel64), {vl_display}, {os_display2}, {pkg_name}, {errata_id}"
+        if det and "Extended Update Support" in det:
+            footer_note2=f"[※2] RHEL Advanced mission critical Update Support({fv}) 環境";
+            version_patch_level2=f"Red Hat Enterprise Linux {rhel_major} (for Intel64), {vl_display}, {os_display2}, {pkg_name}, {errata_id}"
     date = datetime.now().strftime('%Y.%m.%d'); date_jp = datetime.now().strftime('%Y年%m月%d日')
     cves = [c.strip() for c in body.get('cves','').strip().split() if c.strip().startswith('CVE-')]
     bullets=[]
@@ -156,7 +181,7 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
                 parts=t.split(c,1);
                 if len(parts)>1: bullets.append(f" * {parts[1].strip()} ({c})"); break
     cve_section="\n".join(bullets)
-    cve_links="\n".join([f"  - {c}\n          https://access.redhat.com/security/cve/{c}" for c in cves])
+    cve_links="\n".join([f" - {c}\n https://access.redhat.com/security/cve/{c}" for c in cves])
     dept = contacts.get('department','DEPARTMENT')
     approver = contacts.get('approver',{})
     issuer = contacts.get('issuer',{})
@@ -205,12 +230,10 @@ def main():
     ap.add_argument('--force-download', action='store_true', help='Force RPM download regardless of affected products')
     ap.add_argument('RHSA', type=str, help='Red Hat Security Advisory identifier (e.g., RHSA-2024:4108)')
     args = ap.parse_args()
-
     offline_token = os.getenv('OFFLINE_TOKEN')
     if not offline_token: raise Exception('OFFLINE_TOKEN environment variable is not set.')
     access_token = get_access_token(offline_token)
     errata_id = args.RHSA
-
     print(f"Fetching errata information for {errata_id}...")
     info = fetch_errata_info(access_token, errata_id)
     if info:
@@ -218,21 +241,18 @@ def main():
         print(f"Errata information saved to {errata_id}-info.json")
     else:
         print("Warning: Failed to fetch errata information")
-
     filename = f"{errata_id}.json"; pkgs=[]
     for off in count(start=0, step=50):
         pd = fetch_errata_packages(access_token, errata_id, off)
         pkgs.extend(pd['body']);
         if pd['pagination']['count']==0: break
     write_to_json(filename, pkgs)
-
     # Defaults when -c / -t are not provided
     contacts_path = args.contacts or 'contacts.default.json'
     template_path = args.template or 'report_template.default.txt'
     contacts = load_contacts(contacts_path)
     tpl_text = load_template(template_path)
     temp_name = errata_id.split(":")[1]
-    
     if info:
         # Check filtering condition for Report
         should_generate = False
@@ -246,14 +266,19 @@ def main():
                 print("\n[INFO] Report generation skipped.")
                 print("Reason: Affected products did not match the specific target list.")
                 print("Tip: Use --force-report to bypass this check.\n")
-
         if should_generate:
             report = generate_security_report(errata_id, info, pkgs, f"L25-{temp_name}-00", contacts, tpl_text)
             _Path(args.outdir).mkdir(parents=True, exist_ok=True)
             out = _Path(args.outdir) / f"L25-{temp_name}-00.txt"
             with open(out,'w',encoding='utf-8') as f: f.write(report)
+            # Set mtime/atime to issued date
+            issue_dt = extract_issue_datetime(info)
+            ok_ts = set_file_timestamp_to_issue(str(out), issue_dt)
+            if ok_ts:
+                print(f'Adjusted report timestamp to issued date: {issue_dt.isoformat()}')
+            else:
+                print('Note: Failed to adjust report timestamp or issued date not available.')
             print(f"Security report generated: {out}")
-
     match=[]
     for it in pkgs:
         if it['arch']=='src': match.append(it); break
@@ -266,42 +291,22 @@ def main():
             pat = pattern
             if re.search(r"rhel-[67]", cs): pat = r"^rhel-[67]-server-"
             if re.search(pat, cs) and (prev!=c): match.append(p); prev=c; break
-
-    #sh = f"{filename[:-5]}.sh"
-    #with open(sh,'w',encoding='utf-8') as sf:
-    #    sf.write(f'export access_token={access_token};')
-    #    sf.write('export fileno=1;\n')
-    #    for d in match:
-    #        c=d['checksum']; fn=d['filename']
-    #        sf.write(f'export filename={fn};')
-    #        sf.write(f'export checksum={c};')
-    #        sf.write('echo $fileno:$filename;let fileno=fileno+1;')
-    #        sf.write('sleep 2;')
-    #        sf.write("curl -H "Authorization: Bearer $access_token" "https://api.access.redhat.com/management/v1/packages/$checksum/download"
-    # jq 
-    # grep href.:
-    # gawk '{{print "curl " $2 " -o $filename"}}'
-    # sed -e 's/,//g'
-    # sh ;
-    # ")
-
     # Download filtering check
     should_download = False
     if args.n:
         should_download = False
     else:
         if args.force_download:
-             print("Notice: --force-download enabled. Skipping product check for download.")
-             should_download = True
+            print("Notice: --force-download enabled. Skipping product check for download.")
+            should_download = True
         elif info and check_affected_products(info):
-             should_download = True
+            should_download = True
         elif not info:
-             print("Warning: Errata info not available. Skipping download safety check requires --force-download.")
+            print("Warning: Errata info not available. Skipping download safety check requires --force-download.")
         else:
-             print("\n[INFO] RPM Download skipped.")
-             print("Reason: Affected products did not match the specific target list.")
-             print("Tip: Use --force-download to bypass this check.\n")
-
+            print("\n[INFO] RPM Download skipped.")
+            print("Reason: Affected products did not match the specific target list.")
+            print("Tip: Use --force-download to bypass this check.\n")
     if should_download:
         crit=[]; fno=1
         for d in match:
@@ -317,10 +322,15 @@ def main():
                 if not ok: print(f'⚠️ Critical file {fn} download failed!')
             else:
                 print(f'{fno}:{fn}')
-                cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{c}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {fn}\"}}'|sed -e 's/,//g'|sh"
+                cmd = f"""curl -H "Authorization: Bearer {tok}" "https://api.access.redhat.com/management/v1/packages/{c}/download" \
+jq \
+grep href.:\
+gawk '{{print "curl " $2 " -o {fn}"}}'\
+sed -e 's/,//g'\
+sh"""
                 os.system(cmd)
                 if not os.path.exists(fn): os.system('sleep 5;'); os.system(cmd)
-                os.system('sleep 2;')
+            os.system('sleep 2;')
             fno+=1
         if crit:
             print("\n=== Critical Files Final Verification ===")
@@ -334,15 +344,14 @@ def main():
                     if download_file_with_retry(tok, cf['checksum'], cf['filename'], 2): print(" ✓ Re-download successful"); all_ok=True
                     else: print(" ✗ Re-download failed")
             print("\nAll critical files downloaded successfully." if all_ok else "\n⚠️ Some critical files have download issues.")
-
-    ddir = errata_id.replace(':','-')
-    os.system(f"mkdir -p {ddir}/SRPM; mv *src.rpm {ddir}/SRPM 2>/dev/null")
-    arch = 'aarch64' if args.a else 'x86_64'
-    os.system(f"mkdir -p {ddir}/{arch}; mv *.rpm {ddir}/{arch} 2>/dev/null")
-    nid = errata_id.replace(':','-')
-    os.system(f"md5sum {ddir}/*/*.rpm >{ddir}/{nid}-md5sum.txt 2>/dev/null")
-    os.system(f"sha256sum {ddir}/*/*.rpm >{ddir}/{nid}-sha256sum.txt 2>/dev/null")
-    os.system(f"LANG=C tree {ddir} >{ddir}/{nid}-tree.txt 2>/dev/null")
+        ddir = errata_id.replace(':','-')
+        os.system(f"mkdir -p {ddir}/SRPM; mv *src.rpm {ddir}/SRPM 2>/dev/null")
+        arch = 'aarch64' if args.a else 'x86_64'
+        os.system(f"mkdir -p {ddir}/{arch}; mv *.rpm {ddir}/{arch} 2>/dev/null")
+        nid = errata_id.replace(':','-')
+        os.system(f"md5sum {ddir}/*/*.rpm >{ddir}/{nid}-md5sum.txt 2>/dev/null")
+        os.system(f"sha256sum {ddir}/*/*.rpm >{ddir}/{nid}-sha256sum.txt 2>/dev/null")
+        os.system(f"LANG=C tree {ddir} >{ddir}/{nid}-tree.txt 2>/dev/null")
 
 if __name__=='__main__':
     main()
