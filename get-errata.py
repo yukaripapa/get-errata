@@ -366,7 +366,7 @@ def main():
     ap.add_argument('-n', action='store_true', help='No download. just recreate a download script')
     ap.add_argument('-g', action='store_true', help='Skip debug/debuginfo')
     ap.add_argument('-s', action='store_true', help='src.rpm only')
-    ap.add_argument('-r', type=str, default='L25-9999-99', help='Security report number (e.g., L25-0449-00)')
+    ap.add_argument('-r', type=str, default=None, help='Security report number (e.g., L25-0449-00)')
     ap.add_argument('-c', '--contacts', type=str, default=None, help='Path to contacts.json')
     ap.add_argument('-t', '--template', type=str, default=None, help='Path to security_report_template.txt')
     ap.add_argument('-o', '--outdir', type=str, default='.', help='Output directory for report')
@@ -406,6 +406,7 @@ def main():
     tpl_text = load_template(template_path)
 
     temp_name = errata_id.split(":") [1]
+    report_name = f"L25-{temp_name}-00"
 
     if info:
         # Check filtering condition for Report
@@ -422,9 +423,11 @@ def main():
                 print("Tip: Use --force-report to bypass this check.\n")
 
         if should_generate:
-            report = generate_security_report(errata_id, info, pkgs, f"L25-{temp_name}-00", contacts, tpl_text)
+            if args.r:
+                report_name = f"{args.r}"
+            report = generate_security_report(errata_id, info, pkgs, report_name, contacts, tpl_text)
             _Path(args.outdir).mkdir(parents=True, exist_ok=True)
-            out = _Path(args.outdir) / f"L25-{temp_name}-00.txt"
+            out = _Path(args.outdir) / f"{report_name}.txt"
             with open(out, 'w', encoding='utf-8') as f:
                 f.write(report)
 
