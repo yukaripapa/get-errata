@@ -74,9 +74,7 @@ def download_file_with_retry(tok, checksum, fn, max_retries=3):
         if a > 0:
             print(f" Retry {a}/{max_retries}...")
             time.sleep(5)
-        cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{c}/download\" \\\njq \\\ngrep href.:\\\n" \
-              "gawk '\"{print \"curl \" $2 \" -o {fn}\"}\"'\\\n" \
-              "sed - e 's/,//g'\\\nsh"
+        cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{checksum}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {fn}\"}}'|sed -e 's/,//g'|sh"
         os.system(cmd)
         if verify_file_checksum(fn, checksum):
             return True
@@ -510,12 +508,7 @@ def main():
                     print(f'⚠️ Critical file {fn} download failed!')
             else:
                 print(f'{fno}:{fn}')
-                cmd = f"""curl -H "Authorization: Bearer {tok}" "https://api.access.redhat.com/management/v1/packages/{c}/download" \\
-jq \\
-grep href.:\\
-" "gawk '{{print "curl " $2 " -o {fn}"}}'\\
-" "sed -e 's/,//g'\\
-sh"""
+                cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{c}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {fn}\"}}'|sed -e 's/,//g'|sh"
                 os.system(cmd)
                 if not os.path.exists(fn):
                     os.system('sleep 5;')
