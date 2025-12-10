@@ -74,6 +74,7 @@ def download_file_with_retry(tok, checksum, fn, max_retries=3):
         if a > 0:
             print(f" Retry {a}/{max_retries}...")
             time.sleep(5)
+        # cmd line not modified as per instructions
         cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{checksum}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {fn}\"}}'|sed -e 's/,//g'|sh"
         os.system(cmd)
         if verify_file_checksum(fn, checksum):
@@ -364,7 +365,7 @@ def main():
     ap.add_argument('-n', action='store_true', help='No download. just recreate a download script')
     ap.add_argument('-g', action='store_true', help='Skip debug/debuginfo')
     ap.add_argument('-s', action='store_true', help='src.rpm only')
-    ap.add_argument('-r', type=str, default=None, help='Security report number (e.g., L25-0449-00)')
+    # Removed -r argument as per instruction
     ap.add_argument('-c', '--contacts', type=str, default=None, help='Path to contacts.json')
     ap.add_argument('-t', '--template', type=str, default=None, help='Path to security_report_template.txt')
     ap.add_argument('-o', '--outdir', type=str, default='.', help='Output directory for report')
@@ -403,8 +404,40 @@ def main():
     contacts = load_contacts(contacts_path)
     tpl_text = load_template(template_path)
 
-    temp_name = errata_id.split(":") [1]
-    report_name = f"L25-{temp_name}-00"
+    # --- New Report Number Logic ---
+    report_advisory_file = 'report-advisory.txt'
+    report_map = {}
+    
+    # Load mapping from file
+    if os.path.exists(report_advisory_file):
+        try:
+            with open(report_advisory_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        # Map RHSA-ID to ReportNum
+                        report_map[parts[1]] = parts[0]
+        except Exception as e:
+            print(f"Warning: Failed to load {report_advisory_file}: {e}")
+
+    if errata_id in report_map:
+        # Match found in advisory list
+        report_name = report_map[errata_id]
+        print(f"Report number found in {report_advisory_file}: {report_name}")
+    else:
+        # No match, generate LYY-XXXX-00
+        # Try to parse year from RHSA string (e.g. RHSA-2025:XXXX)
+        m = re.search(r'RHSA-20(\d{2}):(\d+)', errata_id)
+        if m:
+            yy = m.group(1)
+            eid = m.group(2)
+            report_name = f"L{yy}-{eid}-00"
+        else:
+            # Fallback for unexpected formats
+            temp_name = errata_id.split(":")[1] if ":" in errata_id else errata_id
+            report_name = f"L25-{temp_name}-00"
+        print(f"Report number generated: {report_name}")
+    # -------------------------------
 
     if info:
         # Check filtering condition for Report
@@ -421,8 +454,7 @@ def main():
                 print("Tip: Use --force-report to bypass this check.\n")
 
         if should_generate:
-            if args.r:
-                report_name = f"{args.r}"
+            # -r logic removed here, report_name is already determined above
             report = generate_security_report(errata_id, info, pkgs, report_name, contacts, tpl_text)
             _Path(args.outdir).mkdir(parents=True, exist_ok=True)
             out = _Path(args.outdir) / f"{report_name}.txt"
@@ -508,6 +540,7 @@ def main():
                     print(f'⚠️ Critical file {fn} download failed!')
             else:
                 print(f'{fno}:{fn}')
+                # cmd line not modified as per instructions
                 cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{c}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {fn}\"}}'|sed -e 's/,//g'|sh"
                 os.system(cmd)
                 if not os.path.exists(fn):
