@@ -14,11 +14,13 @@ import json
 import requests
 import time
 import argparse
+from datetime import datetime
 
 TOKEN_URL = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
 API_BASE = "https://api.access.redhat.com/management/v1"
 REPORT_MARK = "need-action to generate report"
 SUPPORT_LIST_PATH = 'default-support-list.txt'
+REPORT_ADVISORY_FILE = 'report-advisory.txt'
 
 
 def json_value(data, key):
@@ -96,8 +98,78 @@ def should_mark(synopsis: str, support_names: set) -> bool:
     return bool(pkg_match and synopsis_has_high(synopsis))
 
 
+def update_report_mapping(advisory_id: str):
+    """
+    report-advisory.txt を読み込み、アドバイザリIDがなければ新規レポート番号を採番して追記する。
+    レポート番号形式: LYY-XXXX-00 (YY:西暦下2桁, XXXX:連番)
+    """
+    if not advisory_id:
+        return
+
+    # 現在の年のプレフィックス (例: "L25")
+    current_yy = datetime.now().strftime("%y")
+    prefix = f"L{current_yy}"
+    
+    max_seq = 0
+    exists = False
+    
+    # ファイル読み込みと解析
+    if os.path.exists(REPORT_ADVISORY_FILE):
+        try:
+            with open(REPORT_ADVISORY_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        rep_no, adv_id = parts[0], parts[1]
+                        
+                        # 既に存在するかチェック
+                        if adv_id == advisory_id:
+                            exists = True
+                        
+                        # 連番の最大値を取得 (現在の年のもののみ対象)
+                        # 形式 LYY-XXXX-00 を想定
+                        if rep_no.startswith(prefix) and rep_no.endswith("-00"):
+                            try:
+                                # L25-XXXX-00 -> split('-') -> ['L25', 'XXXX', '00']
+                                seq_str = rep_no.split('-')[1]
+                                seq = int(seq_str)
+                                if seq > max_seq:
+                                    max_seq = seq
+                            except (IndexError, ValueError):
+                                pass
+        except Exception as e:
+            print(f"[WARN] Failed to read {REPORT_ADVISORY_FILE}: {e}")
+
+    if exists:
+        # print(f"[INFO] Advisory {advisory_id} is already in {REPORT_ADVISORY_FILE}.")
+        return
+
+    # 新しい番号の生成 (最大値 + 1)
+    new_seq = max_seq + 1
+    new_report_no = f"{prefix}-{str(new_seq).zfill(4)}-00"
+    
+    # ファイルへ追記
+    try:
+        with open(REPORT_ADVISORY_FILE, 'a', encoding='utf-8') as f:
+            # ファイル末尾に改行がない場合を考慮しつつ書き込み（通常は新規行として追加）
+            f.write(f"{new_report_no}\t{advisory_id}\n")
+        print(f"[INFO] Added to {REPORT_ADVISORY_FILE}: {new_report_no}\t{advisory_id}")
+    except Exception as e:
+        print(f"[ERROR] Failed to write to {REPORT_ADVISORY_FILE}: {e}")
+
+
 def run_report(advisory_id: str):
     if not advisory_id:
+        return
+    
+    # --- 追加: レポート番号の更新処理 ---
+    # get-errata.pyを呼ぶ前にファイルが更新されている必要がある
+    update_report_mapping(advisory_id)
+    # --------------------------------
+
+    # ディレクトリが存在するかチェック
+    if os.path.exists(advisory_id) and os.path.isdir(advisory_id):
+        print(f"[REPORT] Directory '{advisory_id}' already exists. Skipping report generation.")
         return
     cmd = f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt -n {advisory_id}"
     print(f"[REPORT] run: {cmd}")
@@ -116,9 +188,6 @@ def increment_lookup_no(lookup_no: str) -> str:
 def decrement_lookup_no(lookup_no: str) -> str:
     year, no = lookup_no.split(":")
     no_i = max(1, int(no) - 1)
-    return f"{year}:{str(no_i).zfill(4)}"
-    year, no = lookup_no.split(":")
-    no_i = int(no) + 1
     return f"{year}:{str(no_i).zfill(4)}"
 
 
