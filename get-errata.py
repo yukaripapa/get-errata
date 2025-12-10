@@ -369,6 +369,7 @@ def main():
     ap.add_argument('-c', '--contacts', type=str, default=None, help='Path to contacts.json')
     ap.add_argument('-t', '--template', type=str, default=None, help='Path to security_report_template.txt')
     ap.add_argument('-o', '--outdir', type=str, default='.', help='Output directory for report')
+    ap.add_argument('--advisory-list', type=str, default='report-advisory.txt', help='Path to report-advisory.txt')
     ap.add_argument('--force-report', action='store_true', help='Force report generation regardless of affected products')
     ap.add_argument('--force-download', action='store_true', help='Force RPM download regardless of affected products')
     ap.add_argument('RHSA', type=str, help='Red Hat Security Advisory identifier (e.g., RHSA-2024:4108)')
@@ -405,7 +406,7 @@ def main():
     tpl_text = load_template(template_path)
 
     # --- New Report Number Logic ---
-    report_advisory_file = 'report-advisory.txt'
+    report_advisory_file = args.advisory_list
     report_map = {}
     
     # Load mapping from file

@@ -14,6 +14,7 @@ import json
 import requests
 import time
 import argparse
+import sys
 from datetime import datetime
 
 TOKEN_URL = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
@@ -22,6 +23,108 @@ REPORT_MARK = "need-action to generate report"
 SUPPORT_LIST_PATH = 'default-support-list.txt'
 REPORT_ADVISORY_FILE = 'report-advisory.txt'
 
+# --- Teams Notification Settings ---
+WEBHOOK_URL = "https://defaulta19f121d81e14858a9d8736e267fd4.c7.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/61e9a01af2ab469288eeded93973e1f1/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PGdFWk0r_4WGJwMciHDNAMHY6V3zxCqvYoqOVMYxwkU"
+MENTION_LIST = ['nagata3333333', 'tkawamura']
+
+def make_card(body, mention_list):
+    entries = []
+    text_head = ""
+    for m in mention_list:
+        text_head += f"<at>{m}@fujitsu.com</at>"
+        entries.append({ "type": "mention",
+                         "text": f"<at>{m}@fujitsu.com</at>",
+                         "mentioned": {
+                             "id": "memberEmail",
+                             "name": f"{m.split('@')[0]}",
+                         },
+                         })
+    body_list = [{
+        "type": "TextBlock",
+        "text": "セキュリティニュース監視 " + text_head,
+    }]
+    for line in body:
+        body_list.append(
+            {
+                "type": "TextBlock",
+                "text": line,
+                "wrap": "true",
+                "fontType": "monospace",
+                "size": "small"
+            })
+    data = { "type": "message",
+             "attachments":  [ {
+                 "contentType": "application/vnd.microsoft.card.adaptive",
+                 "contentUrl": "",
+                 "content": {
+                     "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                     "type": "AdaptiveCard",
+                     "version": "1.4",
+                     "body": body_list,
+                     "msteams": {
+                         "width": "full",
+                         "entries": entries
+                     }
+                 }
+             } ]
+    }
+    return data
+
+def send_teams_notification(advisory_id):
+    """
+    アドバイザリIDに対応するレポート番号を特定し、レポート内容を読み込んでTeamsに通知する
+    """
+    # 1. report-advisory.txt から レポート番号を検索
+    report_no = None
+    if os.path.exists(REPORT_ADVISORY_FILE):
+        try:
+            with open(REPORT_ADVISORY_FILE, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2 and parts[1] == advisory_id:
+                        report_no = parts[0]
+                        break
+        except Exception as e:
+            print(f"[WARN] Notification skipped: Failed to read mapping file: {e}")
+            return
+
+    if not report_no:
+        print(f"[WARN] Notification skipped: Report number not found for {advisory_id}")
+        return
+
+    # 2. 生成されたレポートファイルを読み込む
+    # ディレクトリ構成: ./<advisory_id>/<report_no>.txt
+    report_path = os.path.join(f"./", f"{report_no}.txt")
+    report_lines = []
+    
+    if os.path.exists(report_path):
+        try:
+            with open(report_path, 'r', encoding='utf-8') as f:
+                report_lines = f.readlines()
+        except Exception as e:
+            print(f"[WARN] Failed to read report file {report_path}: {e}")
+            report_lines = ["(Report file read error)"]
+    else:
+        report_lines = ["(Report file not found)"]
+
+    # 3. 通知用 body の作成
+    body = []
+    body.append(f"Advisory URL: https://acess.redhat.com/errata/{advisory_id}")
+    body.append(f"Report ID:   {report_no}")
+    body.append("-" * 40)
+    # body.extend(report_lines)
+
+    # 4. Webhook 送信
+    card = make_card(body, MENTION_LIST)
+    try:
+        print(f"[NOTIFY] Sending Teams notification for {advisory_id}...")
+        response = requests.post(WEBHOOK_URL, json=card)
+        response.raise_for_status()
+        print("[NOTIFY] Success.")
+    except requests.exceptions.RequestException as e:
+        print(f"Error occured in posting to teams: {e}", file=sys.stderr)
+
+# ---------------------------------------
 
 def json_value(data, key):
     try:
@@ -162,19 +265,25 @@ def run_report(advisory_id: str):
     if not advisory_id:
         return
     
-    # --- 追加: レポート番号の更新処理 ---
     # get-errata.pyを呼ぶ前にファイルが更新されている必要がある
     update_report_mapping(advisory_id)
-    # --------------------------------
 
     # ディレクトリが存在するかチェック
     if os.path.exists(advisory_id) and os.path.isdir(advisory_id):
         print(f"[REPORT] Directory '{advisory_id}' already exists. Skipping report generation.")
+        # ディレクトリがあっても通知が必要な場合はここで send_teams_notification(advisory_id) を呼ぶことも可能
+        # 今回は生成時のみ通知と想定しスキップ
         return
-    cmd = f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt -n {advisory_id}"
+        
+    cmd = f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt --advisory-list ../report-avisory.txt -o ../ -n {advisory_id}"
     print(f"[REPORT] run: {cmd}")
     try:
-        os.system(cmd)
+        ret = os.system(cmd)
+        if ret == 0:
+            # レポート生成成功時に通知を送信
+            send_teams_notification(advisory_id)
+        else:
+            print(f"[REPORT] Command failed with return code: {ret}")
     except Exception as e:
         print(f"[REPORT] failed: {e}")
 
@@ -303,7 +412,12 @@ def main():
         print(f"{display_id} {synopsis} {mark}")
         if mark == REPORT_MARK:
             run_report(advisory_id)
-        os.system(f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt -g {advisory_id}")
+
+        # ディレクトリが存在するかチェック
+        if os.path.exists(advisory_id) and os.path.isdir(advisory_id):
+            print(f"[REPORT] Directory '{advisory_id}' already exists. Skipping DOWNLOADING.")
+            continue
+        os.system(f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt --advisory-list ../report-avisory.txt -o ../ -g {advisory_id}")
     if next_download_list:
         print("以上のerrataのダウンロードを実行しました。")
     else:
