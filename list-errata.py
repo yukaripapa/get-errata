@@ -109,7 +109,7 @@ def send_teams_notification(advisory_id):
 
     # 3. 通知用 body の作成
     body = []
-    body.append(f"Advisory URL: https://acess.redhat.com/errata/{advisory_id}")
+    body.append(f"Advisory URL: https://access.redhat.com/errata/{advisory_id}")
     body.append(f"Report ID:   {report_no}")
     body.append("-" * 40)
     # body.extend(report_lines)
