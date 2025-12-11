@@ -70,7 +70,7 @@ def make_card(body, mention_list):
     }
     return data
 
-def send_teams_notification(advisory_id):
+def send_teams_notification(advisory_id, synopsis):
     """
     アドバイザリIDに対応するレポート番号を特定し、レポート内容を読み込んでTeamsに通知する
     """
@@ -110,7 +110,8 @@ def send_teams_notification(advisory_id):
     # 3. 通知用 body の作成
     body = []
     body.append(f"Advisory URL: https://access.redhat.com/errata/{advisory_id}")
-    body.append(f"Report ID:   {report_no}")
+    body.append(f"Synopsis: {synopsis}")
+    body.append(f"should be mapped to Report ID:   {report_no}")
     body.append("-" * 40)
     # body.extend(report_lines)
 
@@ -256,12 +257,13 @@ def update_report_mapping(advisory_id: str):
         with open(REPORT_ADVISORY_FILE, 'a', encoding='utf-8') as f:
             # ファイル末尾に改行がない場合を考慮しつつ書き込み（通常は新規行として追加）
             f.write(f"{new_report_no}\t{advisory_id}\n")
+            f.close()
         print(f"[INFO] Added to {REPORT_ADVISORY_FILE}: {new_report_no}\t{advisory_id}")
     except Exception as e:
         print(f"[ERROR] Failed to write to {REPORT_ADVISORY_FILE}: {e}")
 
 
-def run_report(advisory_id: str):
+def run_report(advisory_id: str, synopsis: str):
     if not advisory_id:
         return
     
@@ -275,13 +277,13 @@ def run_report(advisory_id: str):
         # 今回は生成時のみ通知と想定しスキップ
         return
         
-    cmd = f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt --advisory-list ../report-avisory.txt -o ../ -n {advisory_id}"
+    cmd = f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt --advisory-list ../report-advisory.txt -o ../ -n {advisory_id}"
     print(f"[REPORT] run: {cmd}")
     try:
         ret = os.system(cmd)
         if ret == 0:
             # レポート生成成功時に通知を送信
-            send_teams_notification(advisory_id)
+            send_teams_notification(advisory_id,synopsis)
         else:
             print(f"[REPORT] Command failed with return code: {ret}")
     except Exception as e:
@@ -345,8 +347,8 @@ def main():
                 found_any = True if should_mark(synopsis, support_names) else False
                 # Match generate report ONLY (no download). get-errata.py -n already skips download.
                 if found_any is True:
-                    print(f"[Reverse] {advisory_id} : {synopsis} => レポート生成")
-                    run_report(advisory_id)
+                    print(f"[Reverse] {advisory_id} : {synopsis} => Generating Security News...")
+                    run_report(advisory_id,synopsis)
                     time.sleep(args.sleep)
             # Go to previous number regardless of found status
             current_no = decrement_lookup_no(current_no)
@@ -387,7 +389,7 @@ def main():
                 display_id = advisory_id if not mark else f"**{advisory_id}**"
                 print(f"Scanning {display_id} : {synopsis} {mark}")
                 if mark == REPORT_MARK:
-                    run_report(advisory_id)
+                    run_report(advisory_id,synopsis)
             lookup_no = increment_lookup_no(lookup_no)  # 成否に関係なく前進
             if error_count == MAX_ERROR_COUNT:
                 break
