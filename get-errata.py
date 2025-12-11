@@ -1,8 +1,9 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Tsuyoshi Nagata
+# Modified for multi-line product display
 #
-VERSION = "10.8"
+VERSION = "12.2"
 from itertools import count
 import re, os, json, requests, time, sys, argparse, hashlib
 from datetime import datetime
@@ -74,7 +75,6 @@ def download_file_with_retry(tok, checksum, fn, max_retries=3):
         if a > 0:
             print(f" Retry {a}/{max_retries}...")
             time.sleep(5)
-        # cmd line not modified as per instructions
         cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{checksum}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {fn}\"}}'|sed -e 's/,//g'|sh"
         os.system(cmd)
         if verify_file_checksum(fn, checksum):
@@ -131,14 +131,9 @@ def load_template(path):
 
 
 def check_affected_products(info):
-    """
-    Check if affectedProducts matches the target criteria for report generation.
-    Returns True if report should be generated, False otherwise.
-    """
     if not info or 'body' not in info:
         return False
     products = info['body'].get('affectedProducts', [])
-    # Report generation whitelist (Exact matches required)
     target_products = {
         "Red Hat Enterprise Linux Server - AUS",
         "Red Hat Enterprise Linux for x86_64 - Extended Update Support Extension",
@@ -159,7 +154,6 @@ def check_affected_products(info):
 
 def _parse_iso_dt(text):
     try:
-        # Accept 'YYYY-MM-DDTHH:MM:SSZ' or with offset
         if text.endswith('Z'):
             text = text.replace('Z', '+00:00')
         return datetime.fromisoformat(text)
@@ -168,7 +162,6 @@ def _parse_iso_dt(text):
 
 
 def extract_issue_datetime(info):
-    """Extract issued datetime (UTC) from errata info. Uses body['issued'] only."""
     if not info or 'body' not in info:
         return None
     body = info['body']
@@ -181,7 +174,6 @@ def extract_issue_datetime(info):
 
 
 def set_file_timestamp_to_issue(path, issue_dt):
-    """Set atime/mtime of file to issue_dt. Creation time is not modifiable on Linux."""
     try:
         if issue_dt is None:
             return False
@@ -192,28 +184,14 @@ def set_file_timestamp_to_issue(path, issue_dt):
         return False
 
 
-# -----------------------
-# Wrapping helper (80 cols, 3-space indent)
-# -----------------------
-
 def format_report_text(text: str, width: int = 80, indent: int = 3) -> str:
-    """
-    与えられたテキストを、インデント3文字・80桁での折り返しに整形します。
-    ・単語の途中では改行しません（hyphenも分割しない）
-    ・空行（段落区切り）は保持します
-    ・行頭が "* " や "- " の箇条書きは、ぶら下げインデント（継続行は indent+2）にします
-    """
     if text is None:
         return ''
-
-    # 正規化
     text = text.replace('\r\n', '\n').replace('\r', '\n')
-
     lines = text.split('\n')
     out = []
 
     def wrap_paragraph(paragraph: str) -> str:
-        # paragraph: 1つの段落（箇条書きでない）
         p = ' '.join(part.strip() for part in paragraph.split('\n'))
         return textwrap.fill(
             p,
@@ -231,8 +209,6 @@ def format_report_text(text: str, width: int = 80, indent: int = 3) -> str:
             out.append('')
             i += 1
             continue
-
-        # 箇条書き（* or -）判定（行頭のみ）
         m = re.match(r'^(?:\s*)([\*\-])\s+', line)
         if m:
             marker = m.group(1) + ' '
@@ -248,61 +224,118 @@ def format_report_text(text: str, width: int = 80, indent: int = 3) -> str:
             out.append(filled)
             i += 1
             continue
-
-        # 通常段落: 連続する非空行をまとめて1段落として折り返す
         para_lines = [line]
         i += 1
         while i < len(lines) and lines[i].strip() != '' and not re.match(r'^(?:\s*)([\*\-])\s+', lines[i]):
             para_lines.append(lines[i])
             i += 1
         out.append(wrap_paragraph('\n'.join(para_lines)))
-
     return '\n'.join(out)
-
 
 def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_text):
     if not info or 'body' not in info:
         return 'Error: Invalid errata information'
     body = info['body']
-    summary = body.get('summary', '')
-
-    footer_note2 = ""
-    version_patch_level2 = ""
+    
+    # 基本情報抽出
     pkg_name = extract_package_name(info)
+    summary = body.get('summary', '')
+    products = body.get('affectedProducts', [])
 
-    rhel_ver = extract_rhel_version(pkgs)
-    rhel_major = rhel_ver.split('.') [0]
-    vl_display = f"v.{rhel_major}"
-    os_display = f"RHEL{rhel_major}(Intel64)"
-    footer_note = ''
+    # 1. メジャーバージョンの特定 (例: "9")
+    rhel_ver_str = extract_rhel_version(pkgs)
+    if rhel_ver_str != 'unknown':
+        rhel_major = rhel_ver_str.split('.')[0]
+    else:
+        m = re.search(r"Red Hat Enterprise Linux (\d+)", summary)
+        rhel_major = m.group(1) if m else "?"
 
+    # 2. マイナーバージョン(詳細バージョン)の特定 (例: "9.6")
+    full_ver = None
     vm = re.search(r"Red Hat Enterprise Linux (\d+\.\d+)", summary)
     if vm:
-        fv = vm.group(1)
-        variants = {
-            "Advanced Mission Critical Update Support": "Advanced mission critical Update Support",
-            "Update Services for SAP Solutions": "Update Services for SAP Solutions",
-            "Telecommunications Update Service": "Telecommunications Update Service",
-            "Extended Update Support": "Extended Update Support"
-        }
-        det = None
-        for k, v in variants.items():
-            if k in summary:
-                det = v
-                break
-        if det:
-            rhel_major = fv.split('.') [0]
-            vl_display = f"v.{fv}"
-            os_display = f"RHEL{rhel_major}(Intel64)[※1]"
-            footer_note = f"[※1] RHEL {det}({fv}) 環境"
-            os_display2 = f"RHEL{rhel_major}(Intel64)[※2]"
-        if det and "Extended Update Support" in det:
-            footer_note2 = f"[※2] RHEL Advanced mission critical Update Support({fv}) 環境"
-            version_patch_level2 = f"Red Hat Enterprise Linux {rhel_major} (for Intel64), {vl_display}, {os_display2}, {pkg_name}, {errata_id}"
+        full_ver = vm.group(1)
+    else:
+        for p in pkgs:
+            for cs in p.get('contentSets', []):
+                m_cs = re.search(r'rhel-(\d+\.\d+)-for-', cs)
+                if m_cs:
+                    full_ver = m_cs.group(1)
+                    break
+            if full_ver: break
+    
+    if not full_ver:
+        full_ver = rhel_major
 
+    # 3. 該当製品判定
+    has_std = "Red Hat Enterprise Linux for x86_64" in products
+    has_eus = "Red Hat Enterprise Linux for x86_64 - Extended Update Support" in products
+    
+    # AUS系判定
+    has_aus = False
+    possible_aus = [
+        "Red Hat Enterprise Linux Server - AUS",
+        "Red Hat Enterprise Linux Server - Advanced mission critical Update Support",
+    ]
+    for p in products:
+        if p in possible_aus or "Advanced mission critical" in p or (p.endswith("- AUS") and "Server" in p):
+            has_aus = True
+            break
+
+    # 4. 行データの生成
+    table_lines = []
+    footnotes = []
+    
+    # 注釈番号用カウンタ (※1, ※2... と動的に振るため)
+    note_counter = 1
+
+    # 共通部分
+    base_os_name = f"Red Hat Enterprise Linux {rhel_major} (for Intel64)"
+    suffix = f", {pkg_name}, {errata_id}"
+
+    # (1) Standard Line (通常版は注釈なし)
+    if has_std:
+        vl_str = f"v.{rhel_major}"
+        os_str = f"RHEL{rhel_major}(Intel64)"
+        line = f"{base_os_name}, {vl_str:<5}, {os_str:<19}{suffix}"
+        table_lines.append(line)
+
+    # (2) EUS Line
+    if has_eus:
+        vl_str = f"v.{full_ver}"
+        note_mark = f"[※{note_counter}]"
+        os_str = f"RHEL{rhel_major}(Intel64){note_mark}"
+        
+        line = f"{base_os_name}, {vl_str:<5}, {os_str:<19}{suffix}"
+        table_lines.append(line)
+        footnotes.append(f"{note_mark} RHEL Extended Update Support({full_ver}) 環境")
+        note_counter += 1
+
+    # (3) AUS Line
+    if has_aus:
+        vl_str = f"v.{full_ver}"
+        note_mark = f"[※{note_counter}]"
+        os_str = f"RHEL{rhel_major}(Intel64){note_mark}"
+        
+        line = f"{base_os_name}, {vl_str:<5}, {os_str:<19}{suffix}"
+        table_lines.append(line)
+        footnotes.append(f"{note_mark} RHEL Advanced mission critical Update Support({full_ver}) 環境")
+        note_counter += 1
+
+    # Fallback: 何もマッチしなかった場合
+    if not table_lines:
+        vl_str = f"v.{rhel_major}"
+        os_str = f"RHEL{rhel_major}(Intel64)"
+        table_lines.append(f"{base_os_name}, {vl_str:<5}, {os_str:<19}{suffix}")
+
+    product_table_rows = "\n".join(table_lines)
+    footer_block = "\n".join(footnotes)
+
+    # 日付など
     date = datetime.now().strftime('%Y.%m.%d')
     date_jp = datetime.now().strftime('%Y年%m月%d日')
 
+    # CVE
     cves = [c.strip() for c in body.get('cves', '').strip().split() if c.strip().startswith('CVE-')]
     bullets = []
     for c in cves:
@@ -313,15 +346,14 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
                 if len(parts) > 1:
                     bullets.append(f" * {parts[1].strip()} ({c})")
                     break
-    cve_section = "\n".join(bullets)
     cve_links = "\n".join([f"  - {c}\n          https://access.redhat.com/security/cve/{c}" for c in cves])
 
+    # 連絡先
     dept = contacts.get('department', 'DEPARTMENT')
     approver = contacts.get('approver', {})
     issuer = contacts.get('issuer', {})
     recipients = contacts.get('recipients', [])
 
-    # *** 新しい折り返しフォーマットを適用 ***
     formatted_summary = format_report_text(body.get('summary', ''), width=80, indent=3)
     formatted_description = format_report_text(body.get('description', ''), width=80, indent=3)
     formatted_cve_section = format_report_text(body.get('cve_section', ''), width=80, indent=3)
@@ -342,12 +374,15 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         'ERRATA_ID': errata_id,
         'SUMMARY': formatted_summary,
         'DESCRIPTION': formatted_description,
-        'VL_DISPLAY': vl_display,
-        'OS_DISPLAY': os_display,
+        'PRODUCT_TABLE_ROWS': product_table_rows,
+        'FOOTER_BLOCK': footer_block,
+        # Legacy placeholders
+        'VL_DISPLAY': '',
+        'OS_DISPLAY': '',
         'RHEL_MAJOR': rhel_major,
-        'FOOTER_NOTE': footer_note,
-        'FOOTER_NOTE2': footer_note2,
-        'VERSION_PATCH_LEVEL2': version_patch_level2,
+        'FOOTER_NOTE': '',
+        'FOOTER_NOTE2': '',
+        'VERSION_PATCH_LEVEL2': '',
         'CVES_SECTION': formatted_cve_section,
         'CVES_LINKS': cve_links,
         'DATE': date,
@@ -365,7 +400,6 @@ def main():
     ap.add_argument('-n', action='store_true', help='No download. just recreate a download script')
     ap.add_argument('-g', action='store_true', help='Skip debug/debuginfo')
     ap.add_argument('-s', action='store_true', help='src.rpm only')
-    # Removed -r argument as per instruction
     ap.add_argument('-c', '--contacts', type=str, default=None, help='Path to contacts.json')
     ap.add_argument('-t', '--template', type=str, default=None, help='Path to security_report_template.txt')
     ap.add_argument('-o', '--outdir', type=str, default='.', help='Output directory for report')
@@ -399,49 +433,38 @@ def main():
             break
     write_to_json(filename, pkgs)
 
-    # Defaults when -c / -t are not provided
     contacts_path = args.contacts or 'contacts.default.json'
     template_path = args.template or 'report_template.default.txt'
     contacts = load_contacts(contacts_path)
     tpl_text = load_template(template_path)
 
-    # --- New Report Number Logic ---
     report_advisory_file = args.advisory_list
     report_map = {}
-    
-    # Load mapping from file
     if os.path.exists(report_advisory_file):
         try:
             with open(report_advisory_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     parts = line.strip().split()
                     if len(parts) >= 2:
-                        # Map RHSA-ID to ReportNum
                         report_map[parts[1]] = parts[0]
         except Exception as e:
             print(f"Warning: Failed to load {report_advisory_file}: {e}")
 
     if errata_id in report_map:
-        # Match found in advisory list
         report_name = report_map[errata_id]
         print(f"Report number found in {report_advisory_file}: {report_name}")
     else:
-        # No match, generate LYY-XXXX-00
-        # Try to parse year from RHSA string (e.g. RHSA-2025:XXXX)
         m = re.search(r'RHSA-20(\d{2}):(\d+)', errata_id)
         if m:
             yy = m.group(1)
             eid = m.group(2)
             report_name = f"L{yy}-{eid}-00"
         else:
-            # Fallback for unexpected formats
             temp_name = errata_id.split(":")[1] if ":" in errata_id else errata_id
             report_name = f"L25-{temp_name}-00"
         print(f"Report number generated: {report_name}")
-    # -------------------------------
 
     if info:
-        # Check filtering condition for Report
         should_generate = False
         if args.force_report:
             print("Notice: --force-report enabled. Skipping product check.")
@@ -455,14 +478,12 @@ def main():
                 print("Tip: Use --force-report to bypass this check.\n")
 
         if should_generate:
-            # -r logic removed here, report_name is already determined above
             report = generate_security_report(errata_id, info, pkgs, report_name, contacts, tpl_text)
             _Path(args.outdir).mkdir(parents=True, exist_ok=True)
             out = _Path(args.outdir) / f"{report_name}.txt"
             with open(out, 'w', encoding='utf-8') as f:
                 f.write(report)
 
-            # Set mtime/atime to issued date
             issue_dt = extract_issue_datetime(info)
             ok_ts = set_file_timestamp_to_issue(str(out), issue_dt)
             if ok_ts:
@@ -494,7 +515,6 @@ def main():
                 prev = c
                 break
 
-    # Download filtering check
     should_download = False
     if args.n:
         should_download = False
@@ -541,7 +561,6 @@ def main():
                     print(f'⚠️ Critical file {fn} download failed!')
             else:
                 print(f'{fno}:{fn}')
-                # cmd line not modified as per instructions
                 cmd = f"curl -H \"Authorization: Bearer {tok}\" \"https://api.access.redhat.com/management/v1/packages/{c}/download\" | jq | grep href.:|gawk '{{print \"curl \" $2 \" -o {fn}\"}}'|sed -e 's/,//g'|sh"
                 os.system(cmd)
                 if not os.path.exists(fn):
