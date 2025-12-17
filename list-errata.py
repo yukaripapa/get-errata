@@ -176,6 +176,29 @@ def synopsis_has_high(synopsis: str) -> bool:
     s = (synopsis or '').lower()
     return ('important' in s) or ('critical' in s)
 
+def check_affected_products(info):
+    if not info or 'body' not in info:
+        return False
+    products = info['body'].get('affectedProducts', [])
+    if not products:
+        return False
+    target_products = {
+        "Red Hat Enterprise Linux Server - AUS",
+        "Red Hat Enterprise Linux for x86_64 - Extended Update Support Extension",
+        "Red Hat Enterprise Linux for x86_64 - Extended Update Support",
+        "Red Hat Enterprise Linux for x86_64",
+        "Red Hat Enterprise Linux Server - Extended Life Cycle Support"
+    }
+    print("Checking affected products:")
+    match_found = False
+    for p in products:
+        if p in target_products:
+            print(f" [MATCH] {p}")
+            match_found = True
+        else:
+            print(f" [SKIP] {p}")
+    return match_found
+
 
 def package_from_synopsis(synopsis: str) -> str:
     t = (synopsis or '').strip()
@@ -341,10 +364,13 @@ def main():
                 data = fetch_errata(access_token, advisory_key)
                 if data is None:
                     continue
+                should_generate = False            
+                if check_affected_products(data):
+                    should_generate = True
                 body = data.get('body', {})
                 advisory_id = body.get('id', f'UNKNOWN-{current_no}')
                 synopsis = body.get('synopsis', '')
-                found_any = True if should_mark(synopsis, support_names) else False
+                found_any = True if (should_generate and should_mark(synopsis, support_names)) else False
                 # Match generate report ONLY (no download). get-errata.py -n already skips download.
                 if found_any is True:
                     print(f"[Reverse] {advisory_id} : {synopsis} => Generating Security News...")
@@ -385,7 +411,10 @@ def main():
                 fetch_count += 1
                 error_count = 0
                 errata_list.append(body)
-                mark = REPORT_MARK if should_mark(synopsis, support_names) else ''
+                should_generate = False
+                if check_affected_products(data):
+                    should_generate = True
+                mark = REPORT_MARK if (should_generate and should_mark(synopsis, support_names)) else ''
                 display_id = advisory_id if not mark else f"**{advisory_id}**"
                 print(f"Scanning {display_id} : {synopsis} {mark}")
                 if mark == REPORT_MARK:
@@ -409,7 +438,11 @@ def main():
         advisory_no = advisory_id[5:] if advisory_id else ''
         if advisory_no > last_lookup:
             next_download_list.append(e)
-        mark = REPORT_MARK if should_mark(synopsis, support_names) else ''
+        should_generate = False
+        data = fetch_errata(access_token, advisory_id)
+        if check_affected_products(data):
+            should_generate = True
+        mark = REPORT_MARK if (should_generate and should_mark(synopsis, support_names)) else ''
         display_id = advisory_id if not mark else f"**{advisory_id}**"
         print(f"{display_id} {synopsis} {mark}")
         if mark == REPORT_MARK:
@@ -419,7 +452,7 @@ def main():
         if os.path.exists(advisory_id) and os.path.isdir(advisory_id):
             print(f"[REPORT] Directory '{advisory_id}' already exists. Skipping DOWNLOADING.")
             continue
-        os.system(f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt --advisory-list ../report-avisory.txt -o ../ -g {advisory_id}")
+        os.system(f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt --advisory-list ../report-advisory.txt -o ../ -g {advisory_id}")
     if next_download_list:
         print("以上のerrataのダウンロードを実行しました。")
     else:

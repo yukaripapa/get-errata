@@ -134,6 +134,8 @@ def check_affected_products(info):
     if not info or 'body' not in info:
         return False
     products = info['body'].get('affectedProducts', [])
+    if not products:
+        return False
     target_products = {
         "Red Hat Enterprise Linux Server - AUS",
         "Red Hat Enterprise Linux for x86_64 - Extended Update Support Extension",
