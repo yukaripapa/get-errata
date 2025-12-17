@@ -138,7 +138,6 @@ def check_affected_products(info):
         return False
     target_products = {
         "Red Hat Enterprise Linux Server - AUS",
-        "Red Hat Enterprise Linux for x86_64 - Extended Update Support Extension",
         "Red Hat Enterprise Linux for x86_64 - Extended Update Support",
         "Red Hat Enterprise Linux for x86_64",
         "Red Hat Enterprise Linux Server - Extended Life Cycle Support"
@@ -355,9 +354,15 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
     approver = contacts.get('approver', {})
     issuer = contacts.get('issuer', {})
     recipients = contacts.get('recipients', [])
-
-    formatted_summary = format_report_text(body.get('summary', ''), width=80, indent=3)
-    formatted_description = format_report_text(body.get('description', ''), width=80, indent=3)
+    remove_text = "\nRed Hat Product Security has rated this update as having a security impact of Important. A Common Vulnerability Scoring System (CVSS) base score, which gives a detailed severity rating, is available for each vulnerability from the CVE link(s) in the References section."
+    remove_text2 = "\nRed Hat Product Security has rated this update as having a security impact of Moderate. A Common Vulnerability Scoring System (CVSS) base score, which gives a detailed severity rating, is available for each vulnerability from the CVE link(s) in the References section."
+    remove_text3 = "\n\nFor more details about the security issue(s), including the impact, a CVSS score, acknowledgments, and other related information, refer to the CVE page(s) listed in the References section."
+    removed_summary2 = summary.replace(remove_text2, "")
+    removed_summary = removed_summary2.replace(remove_text, "")
+    formatted_summary = format_report_text(removed_summary, width=80, indent=3)
+    removed_description = body.get('description', '')
+    removed_description = removed_description.replace(remove_text3, "")
+    formatted_description = format_report_text(removed_description, width=80, indent=3)
     formatted_cve_section = format_report_text(body.get('cve_section', ''), width=80, indent=3)
 
     data = {

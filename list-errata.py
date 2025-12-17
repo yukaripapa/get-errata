@@ -184,7 +184,6 @@ def check_affected_products(info):
         return False
     target_products = {
         "Red Hat Enterprise Linux Server - AUS",
-        "Red Hat Enterprise Linux for x86_64 - Extended Update Support Extension",
         "Red Hat Enterprise Linux for x86_64 - Extended Update Support",
         "Red Hat Enterprise Linux for x86_64",
         "Red Hat Enterprise Linux Server - Extended Life Cycle Support"
@@ -293,14 +292,7 @@ def run_report(advisory_id: str, synopsis: str):
     # get-errata.pyを呼ぶ前にファイルが更新されている必要がある
     update_report_mapping(advisory_id)
 
-    # ディレクトリが存在するかチェック
-    if os.path.exists(advisory_id) and os.path.isdir(advisory_id):
-        print(f"[REPORT] Directory '{advisory_id}' already exists. Skipping report generation.")
-        # ディレクトリがあっても通知が必要な場合はここで send_teams_notification(advisory_id) を呼ぶことも可能
-        # 今回は生成時のみ通知と想定しスキップ
-        return
-        
-    cmd = f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt --advisory-list ../report-advisory.txt -o ../ -n {advisory_id}"
+    cmd = f"./get-errata/get-errata.py -c ./contacts.default.json -t ./report_template.default.txt --advisory-list ./report-advisory.txt -o ./ -n {advisory_id}"
     print(f"[REPORT] run: {cmd}")
     try:
         ret = os.system(cmd)
@@ -446,7 +438,7 @@ def main():
         display_id = advisory_id if not mark else f"**{advisory_id}**"
         print(f"{display_id} {synopsis} {mark}")
         if mark == REPORT_MARK:
-            run_report(advisory_id)
+            run_report(advisory_id,synopsis)
 
         # ディレクトリが存在するかチェック
         if os.path.exists(advisory_id) and os.path.isdir(advisory_id):
