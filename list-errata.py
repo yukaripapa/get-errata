@@ -25,11 +25,27 @@ REPORT_ADVISORY_FILE = 'report-advisory.txt'
 
 # --- Teams Notification Settings ---
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
-MENTION_LIST = ['nagata3333333', 'tkawamura']
 # Read Teams webhook URL from environment (same style as OFFLINE_TOKEN)
 if WEBHOOK_URL is None or WEBHOOK_URL.strip() == '':
     raise RuntimeError('WEBHOOK_URL 環境変数が設定されていません。')
+MENTION_LIST = ['TEAMS-USER1', 'TEAMS-USER2']
+# Read mention list from environment variable MENTION_LIST.
+# Accept comma/space-separated values or a JSON array string.
+_env_mentions = os.getenv('MENTION_LIST')
+if _env_mentions:
+    try:
+        # Try JSON first (e.g., '["alice","bob"]')
+        parsed = json.loads(_env_mentions)
+        if isinstance(parsed, list):
+            MENTION_LIST = [str(x).strip() for x in parsed if str(x).strip()]
+        else:
+            raise ValueError
+    except Exception:
+        # Fallback: split by commas or whitespace
+        tokens = re.split(r'[
 
+	,\s]+', _env_mentions)
+        MENTION_LIST = [t.strip() for t in tokens if t.strip()]
 
 def make_card(body, mention_list):
     entries = []
