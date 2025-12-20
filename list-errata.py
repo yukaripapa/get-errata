@@ -42,9 +42,7 @@ if _env_mentions:
             raise ValueError
     except Exception:
         # Fallback: split by commas or whitespace
-        tokens = re.split(r'[
-
-	,\s]+', _env_mentions)
+        tokens = re.split(r'[,\\s]+', _env_mentions)
         MENTION_LIST = [t.strip() for t in tokens if t.strip()]
 
 def make_card(body, mention_list):
