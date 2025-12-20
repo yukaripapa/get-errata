@@ -24,8 +24,12 @@ SUPPORT_LIST_PATH = 'default-support-list.txt'
 REPORT_ADVISORY_FILE = 'report-advisory.txt'
 
 # --- Teams Notification Settings ---
-WEBHOOK_URL = "https://defaulta19f121d81e14858a9d8736e267fd4.c7.environment.api.powerplatform.com:443/powerautomate/automations/direct/workflows/61e9a01af2ab469288eeded93973e1f1/triggers/manual/paths/invoke?api-version=1&sp=%2Ftriggers%2Fmanual%2Frun&sv=1.0&sig=PGdFWk0r_4WGJwMciHDNAMHY6V3zxCqvYoqOVMYxwkU"
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 MENTION_LIST = ['nagata3333333', 'tkawamura']
+# Read Teams webhook URL from environment (same style as OFFLINE_TOKEN)
+if WEBHOOK_URL is None or WEBHOOK_URL.strip() == '':
+    raise RuntimeError('WEBHOOK_URL 環境変数が設定されていません。')
+
 
 def make_card(body, mention_list):
     entries = []
