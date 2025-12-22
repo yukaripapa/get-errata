@@ -347,7 +347,7 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
                 if len(parts) > 1:
                     bullets.append(f" * {parts[1].strip()} ({c})")
                     break
-    cve_links = "\n".join([f"  - {c}\n          https://access.redhat.com/security/cve/{c}" for c in cves])
+    cve_links = "\n".join([f"  - {c}\n          https://access.redhat.com/security/cve/{c.lower()}" for c in cves])
 
     # 連絡先
     dept = contacts.get('department', 'DEPARTMENT')
@@ -357,11 +357,13 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
     remove_text = "\nRed Hat Product Security has rated this update as having a security impact of Important. A Common Vulnerability Scoring System (CVSS) base score, which gives a detailed severity rating, is available for each vulnerability from the CVE link(s) in the References section."
     remove_text2 = "\nRed Hat Product Security has rated this update as having a security impact of Moderate. A Common Vulnerability Scoring System (CVSS) base score, which gives a detailed severity rating, is available for each vulnerability from the CVE link(s) in the References section."
     remove_text3 = "\n\nFor more details about the security issue(s), including the impact, a CVSS score, acknowledgments, and other related information, refer to the CVE page(s) listed in the References section."
+    remove_text4 = "Security Fix(es):\n\n"
     removed_summary2 = summary.replace(remove_text2, "")
     removed_summary = removed_summary2.replace(remove_text, "")
     formatted_summary = format_report_text(removed_summary, width=80, indent=3)
     removed_description = body.get('description', '')
     removed_description = removed_description.replace(remove_text3, "")
+    removed_description = removed_description.replace(remove_text4, "")
     formatted_description = format_report_text(removed_description, width=80, indent=3)
     formatted_cve_section = format_report_text(body.get('cve_section', ''), width=80, indent=3)
 
@@ -491,6 +493,8 @@ def main():
             with open(out, 'w', encoding='utf-8') as f:
                 f.write(report)
 
+            cmd = f"/usr/bin/iconv  -f UTF-8 -t SHIFT_JIS {report_name}.txt >tmp_sjis.txt; /usr/bin/unix2dos -n tmp_sjis.txt  {report_name}.txt"
+            os.system(cmd)
             issue_dt = extract_issue_datetime(info)
             ok_ts = set_file_timestamp_to_issue(str(out), issue_dt)
             if ok_ts:
