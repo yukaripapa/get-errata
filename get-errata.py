@@ -3,7 +3,7 @@
 # Tsuyoshi Nagata
 # Modified for multi-line product display
 #
-VERSION = "12.2"
+VERSION = "12.3"
 from itertools import count
 import re, os, json, requests, time, sys, argparse, hashlib
 from datetime import datetime
@@ -133,7 +133,11 @@ def load_template(path):
 def check_affected_products(info):
     if not info or 'body' not in info:
         return False
-    products = info['body'].get('affectedProducts', [])
+    # 修正: JSONでnullの場合は空リストにする
+    products = info['body'].get('affectedProducts')
+    if products is None:
+        products = []
+        
     if not products:
         return False
     target_products = {
@@ -241,7 +245,11 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
     # 基本情報抽出
     pkg_name = extract_package_name(info)
     summary = body.get('summary', '')
-    products = body.get('affectedProducts', [])
+    
+    # 修正: AffectedProductsがnullの場合をハンドリング
+    products = body.get('affectedProducts')
+    if products is None:
+        products = []
 
     # 1. メジャーバージョンの特定 (例: "9")
     rhel_ver_str = extract_rhel_version(pkgs)
