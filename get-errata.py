@@ -3,7 +3,7 @@
 # Tsuyoshi Nagata
 # Modified for multi-line product display
 #
-VERSION = "12.3"
+VERSION = "13.3"
 from itertools import count
 import re, os, json, requests, time, sys, argparse, hashlib
 from datetime import datetime
@@ -291,6 +291,18 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
             has_aus = True
             break
 
+    # --- [修正箇所開始] ELS (Extended Life Cycle Support) 判定 ---
+    has_els = False
+    # 製品リストから判定
+    for p in products:
+        if "Extended Life Cycle Support" in p:
+            has_els = True
+            break
+    # サマリーから判定 (製品リストになくてもサマリーにあれば対象)
+    if not has_els and ("Extended Lifecycle Support" in summary or "Extended Life Cycle Support" in summary):
+        has_els = True
+    # --- [修正箇所終了] ---
+
     # 4. 行データの生成
     table_lines = []
     footnotes = []
@@ -330,6 +342,20 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         table_lines.append(line)
         footnotes.append(f"{note_mark} RHEL Advanced mission critical Update Support({full_ver}) 環境")
         note_counter += 1
+
+    # --- [修正箇所開始] ELS Line ---
+    if has_els:
+        # ELSは通常メジャーバージョン単位(例: v.7)で扱われるため rhel_major を使用
+        vl_str = f"v.{rhel_major}"
+        note_mark = f"[※{note_counter}]"
+        os_str = f"RHEL{rhel_major}(Intel64){note_mark}"
+        
+        line = f"{base_os_name}, {vl_str:<5}, {os_str:<19}{suffix}"
+        table_lines.append(line)
+        # 脚注の出力フォーマット
+        footnotes.append(f"{note_mark} RHEL Extended Life Cycle Support {rhel_major} 環境")
+        note_counter += 1
+    # --- [修正箇所終了] ---
 
     # Fallback: 何もマッチしなかった場合
     if not table_lines:
