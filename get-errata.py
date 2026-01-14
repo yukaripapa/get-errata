@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Tsuyoshi Nagata
 # Modified for multi-line product display
+# Modified to support APPLICABLE_SYSTEMS detection
 #
-VERSION = "13.3"
+VERSION = "13.4"
 from itertools import count
 import re, os, json, requests, time, sys, argparse, hashlib
 from datetime import datetime
@@ -133,7 +134,6 @@ def load_template(path):
 def check_affected_products(info):
     if not info or 'body' not in info:
         return False
-    # 修正: JSONでnullの場合は空リストにする
     products = info['body'].get('affectedProducts')
     if products is None:
         products = []
@@ -237,21 +237,37 @@ def format_report_text(text: str, width: int = 80, indent: int = 3) -> str:
         out.append(wrap_paragraph('\n'.join(para_lines)))
     return '\n'.join(out)
 
+
+def detect_applicable_systems(info):
+    """
+    summaryに10.0が含まれている場合はPRIMERGYのみ、
+    含まれていない場合はPRIMEQUEST, PRIMERGYを返す
+    """
+    if not info or 'body' not in info:
+        return "PRIMEQUEST, PRIMERGY"
+    
+    summary = info['body'].get('summary', '')
+    
+    if "10.0" in summary:
+        return "PRIMERGY"
+    else:
+        return "PRIMEQUEST, PRIMERGY"
+
+
 def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_text):
     if not info or 'body' not in info:
         return 'Error: Invalid errata information'
     body = info['body']
     
-    # 基本情報抽出
     pkg_name = extract_package_name(info)
     summary = body.get('summary', '')
     
-    # 修正: AffectedProductsがnullの場合をハンドリング
     products = body.get('affectedProducts')
     if products is None:
         products = []
 
-    # 1. メジャーバージョンの特定 (例: "9")
+    applicable_systems = detect_applicable_systems(info)
+
     rhel_ver_str = extract_rhel_version(pkgs)
     if rhel_ver_str != 'unknown':
         rhel_major = rhel_ver_str.split('.')[0]
@@ -259,7 +275,6 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         m = re.search(r"Red Hat Enterprise Linux (\d+)", summary)
         rhel_major = m.group(1) if m else "?"
 
-    # 2. マイナーバージョン(詳細バージョン)の特定 (例: "9.6")
     full_ver = None
     vm = re.search(r"Red Hat Enterprise Linux (\d+\.\d+)", summary)
     if vm:
@@ -276,11 +291,9 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
     if not full_ver:
         full_ver = rhel_major
 
-    # 3. 該当製品判定
     has_std = "Red Hat Enterprise Linux for x86_64" in products
     has_eus = "Red Hat Enterprise Linux for x86_64 - Extended Update Support" in products
     
-    # AUS系判定
     has_aus = False
     possible_aus = [
         "Red Hat Enterprise Linux Server - AUS",
@@ -291,37 +304,28 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
             has_aus = True
             break
 
-    # --- [修正箇所開始] ELS (Extended Life Cycle Support) 判定 ---
     has_els = False
-    # 製品リストから判定
     for p in products:
         if "Extended Life Cycle Support" in p:
             has_els = True
             break
-    # サマリーから判定 (製品リストになくてもサマリーにあれば対象)
     if not has_els and ("Extended Lifecycle Support" in summary or "Extended Life Cycle Support" in summary):
         has_els = True
-    # --- [修正箇所終了] ---
 
-    # 4. 行データの生成
     table_lines = []
     footnotes = []
     
-    # 注釈番号用カウンタ (※1, ※2... と動的に振るため)
     note_counter = 1
 
-    # 共通部分
     base_os_name = f"Red Hat Enterprise Linux {rhel_major} (for Intel64)"
     suffix = f", {pkg_name}, {errata_id}"
 
-    # (1) Standard Line (通常版は注釈なし)
     if has_std:
         vl_str = f"v.{rhel_major}"
         os_str = f"RHEL{rhel_major}(Intel64)"
         line = f"{base_os_name}, {vl_str:<5}, {os_str:<19}{suffix}"
         table_lines.append(line)
 
-    # (2) EUS Line
     if has_eus:
         vl_str = f"v.{full_ver}"
         note_mark = f"[※{note_counter}]"
@@ -332,7 +336,6 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         footnotes.append(f"{note_mark} RHEL Extended Update Support({full_ver}) 環境")
         note_counter += 1
 
-    # (3) AUS Line
     if has_aus:
         vl_str = f"v.{full_ver}"
         note_mark = f"[※{note_counter}]"
@@ -343,21 +346,16 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         footnotes.append(f"{note_mark} RHEL Advanced mission critical Update Support({full_ver}) 環境")
         note_counter += 1
 
-    # --- [修正箇所開始] ELS Line ---
     if has_els:
-        # ELSは通常メジャーバージョン単位(例: v.7)で扱われるため rhel_major を使用
         vl_str = f"v.{rhel_major}"
         note_mark = f"[※{note_counter}]"
         os_str = f"RHEL{rhel_major}(Intel64){note_mark}"
         
         line = f"{base_os_name}, {vl_str:<5}, {os_str:<19}{suffix}"
         table_lines.append(line)
-        # 脚注の出力フォーマット
         footnotes.append(f"{note_mark} RHEL Extended Life Cycle Support {rhel_major} 環境")
         note_counter += 1
-    # --- [修正箇所終了] ---
 
-    # Fallback: 何もマッチしなかった場合
     if not table_lines:
         vl_str = f"v.{rhel_major}"
         os_str = f"RHEL{rhel_major}(Intel64)"
@@ -366,11 +364,9 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
     product_table_rows = "\n".join(table_lines)
     footer_block = "\n".join(footnotes)
 
-    # 日付など
     date = datetime.now().strftime('%Y.%m.%d')
     date_jp = datetime.now().strftime('%Y年%m月%d日')
 
-    # CVE
     cves = [c.strip() for c in body.get('cves', '').strip().split() if c.strip().startswith('CVE-')]
     bullets = []
     for c in cves:
@@ -383,7 +379,6 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
                     break
     cve_links = "\n".join([f"  - {c}\n          https://access.redhat.com/security/cve/{c.lower()}" for c in cves])
 
-    # 連絡先
     dept = contacts.get('department', 'DEPARTMENT')
     approver = contacts.get('approver', {})
     issuer = contacts.get('issuer', {})
@@ -419,7 +414,7 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         'DESCRIPTION': formatted_description,
         'PRODUCT_TABLE_ROWS': product_table_rows,
         'FOOTER_BLOCK': footer_block,
-        # Legacy placeholders
+        'APPLICABLE_SYSTEMS': applicable_systems,
         'VL_DISPLAY': '',
         'OS_DISPLAY': '',
         'RHEL_MAJOR': rhel_major,
