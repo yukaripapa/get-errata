@@ -496,10 +496,10 @@ def main():
         if m:
             yy = m.group(1)
             eid = m.group(2)
-            report_name = f"L{yy}-{eid}-00"
+            report_name = f"L{yy}-{eid}-0T"
         else:
             temp_name = errata_id.split(":")[1] if ":" in errata_id else errata_id
-            report_name = f"L25-{temp_name}-00"
+            report_name = f"LYY-{temp_name}-00"
         print(f"Report number generated: {report_name}")
 
     if info:
