@@ -335,7 +335,7 @@ def decrement_lookup_no(lookup_no: str) -> str:
     return f"{year}:{str(no_i).zfill(4)}"
 
 
-MAX_ERROR_COUNT = 300
+MAX_ERROR_COUNT = 500
 MAX_FETCH_COUNT = 40
 
 
