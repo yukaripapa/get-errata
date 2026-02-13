@@ -335,7 +335,7 @@ def decrement_lookup_no(lookup_no: str) -> str:
     return f"{year}:{str(no_i).zfill(4)}"
 
 
-MAX_ERROR_COUNT = 500
+MAX_ERROR_COUNT = 400
 MAX_FETCH_COUNT = 40
 
 
@@ -361,7 +361,7 @@ def main():
     if args.reverse_start:
         # Accept either RHSA-YYYY:NNNN or RHBA-YYYY:NNNN as starting point
         start_id = args.reverse_start.strip()
-        if not re.match(r'^(RHSA|RHBA)-\d{4}:\d{5}$', start_id):
+        if not re.match(r'^(RHSA|RHBA)-\d{4}:\d{4,5}$', start_id):
             raise RuntimeError('書式エラー: --reverse-start は RHSA-YYYY:NNNN または RHBA-YYYY:NNNN を指定してください。')
         start_no = start_id[5:]  # YYYY:NNNN
         current_no = start_no

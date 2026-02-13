@@ -3,8 +3,9 @@
 # Tsuyoshi Nagata
 # Modified for multi-line product display
 # Modified to support APPLICABLE_SYSTEMS detection
+# Modified to support custom report date via -d/--date
 #
-VERSION = "13.4"
+VERSION = "14.5"
 from itertools import count
 import re, os, json, requests, time, sys, argparse, hashlib
 from datetime import datetime
@@ -239,10 +240,6 @@ def format_report_text(text: str, width: int = 80, indent: int = 3) -> str:
 
 
 def detect_applicable_systems(info):
-    """
-    summaryに10.0が含まれている場合はPRIMERGYのみ、
-    含まれていない場合はPRIMEQUEST, PRIMERGYを返す
-    """
     if not info or 'body' not in info:
         return "PRIMEQUEST, PRIMERGY"
     
@@ -254,7 +251,7 @@ def detect_applicable_systems(info):
         return "PRIMEQUEST, PRIMERGY"
 
 
-def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_text):
+def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_text, target_date):
     if not info or 'body' not in info:
         return 'Error: Invalid errata information'
     body = info['body']
@@ -364,19 +361,11 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
     product_table_rows = "\n".join(table_lines)
     footer_block = "\n".join(footnotes)
 
-    date = datetime.now().strftime('%Y.%m.%d')
-    date_jp = datetime.now().strftime('%Y年%m月%d日')
+    # Use the provided target_date instead of now()
+    date = target_date.strftime('%Y.%m.%d')
+    date_jp = target_date.strftime('%Y年%m月%d日')
 
     cves = [c.strip() for c in body.get('cves', '').strip().split() if c.strip().startswith('CVE-')]
-    bullets = []
-    for c in cves:
-        for b in body.get('bugzillas', []):
-            t = b.get('title', '')
-            if c in t:
-                parts = t.split(c, 1)
-                if len(parts) > 1:
-                    bullets.append(f" * {parts[1].strip()} ({c})")
-                    break
     cve_links = "\n".join([f"  - {c}\n          https://access.redhat.com/security/cve/{c.lower()}" for c in cves])
 
     dept = contacts.get('department', 'DEPARTMENT')
@@ -441,11 +430,22 @@ def main():
     ap.add_argument('-c', '--contacts', type=str, default=None, help='Path to contacts.json')
     ap.add_argument('-t', '--template', type=str, default=None, help='Path to security_report_template.txt')
     ap.add_argument('-o', '--outdir', type=str, default='.', help='Output directory for report')
+    ap.add_argument('-d', '--date', type=str, default=None, help='Set report date (YYYY-MM-DD). Default is today.')
     ap.add_argument('--advisory-list', type=str, default='report-advisory.txt', help='Path to report-advisory.txt')
     ap.add_argument('--force-report', action='store_true', help='Force report generation regardless of affected products')
     ap.add_argument('--force-download', action='store_true', help='Force RPM download regardless of affected products')
     ap.add_argument('RHSA', type=str, help='Red Hat Security Advisory identifier (e.g., RHSA-2024:4108)')
     args = ap.parse_args()
+
+    # Determine the report date
+    if args.date:
+        try:
+            target_date = datetime.strptime(args.date, '%Y-%m-%d')
+        except ValueError:
+            print(f"Error: Invalid date format '{args.date}'. Please use YYYY-MM-DD.")
+            sys.exit(1)
+    else:
+        target_date = datetime.now()
 
     offline_token = os.getenv('OFFLINE_TOKEN')
     if not offline_token:
@@ -516,7 +516,7 @@ def main():
                 print("Tip: Use --force-report to bypass this check.\n")
 
         if should_generate:
-            report = generate_security_report(errata_id, info, pkgs, report_name, contacts, tpl_text)
+            report = generate_security_report(errata_id, info, pkgs, report_name, contacts, tpl_text, target_date)
             _Path(args.outdir).mkdir(parents=True, exist_ok=True)
             out = _Path(args.outdir) / f"{report_name}.txt"
             with open(out, 'w', encoding='utf-8') as f:
@@ -531,8 +531,9 @@ def main():
             else:
                 print('Note: Failed to adjust report timestamp or issued date not available.')
 
-            print(f"Security report generated: {out}")
+            print(f"Security report generated: {out} with date {target_date.strftime('%Y-%m-%d')}")
 
+    # (Rest of the download logic remains unchanged)
     match = []
     for it in pkgs:
         if it['arch'] == 'src':
