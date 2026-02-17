@@ -1,35 +1,58 @@
 # get-errata
 
 ## Overview
-`get-errata.py` is a Python script designed to retrieve detailed information about Red Hat Security Advisories (RHSA) and optionally download related RPM packages. It also generates formatted security reports for internal distribution.
+`get-errata.py` is a Python script designed to automate the retrieval of Red Hat Security Advisory (RHSA) information, generate security reports, and download relevant RPM packages. It interacts with the Red Hat API to fetch detailed errata data and verify if the advisory affects specific target systems.
+
+## Key Features
+- **Errata Information Retrieval**: Fetches detailed JSON metadata and package lists using an offline token.
+- **Affected Product Detection**: Identifies if the errata applies to target products (e.g., RHEL Server, EUS, AUS). Skips processing if not relevant (override with `--force-report` or `--force-download`).
+- **Security Report Generation**:
+  - Creates a formatted text report based on a template.
+  - Converts the report to **Shift_JIS** encoding with **CRLF** line endings.
+  - Adjusts the file timestamp to match the advisory's issue date.
+- **RPM Package Download**:
+  - Downloads only necessary packages based on architecture (`x86_64` or `aarch64`) and type (Debug/Source exclusion).
+  - Verifies SHA256 checksums and automatically retries critical file downloads.
+  - Organizes downloads into structured directories (`SRPM`, `x86_64`, etc.).
 
 ## Usage
 ```bash
-usage: get-errata.py [-h] [-a] [-n] [-g] [-s] [-v] RHSA
+usage: get-errata.py [-h] [-a] [-n] [-g] [-s] [-c CONTACTS] [-t TEMPLATE] [-o OUTDIR] [-d DATE]
+                     [--advisory-list ADVISORY_LIST] [--force-report] [--force-download] RHSA
 ```
 
 ### Arguments
 - **Positional arguments:**
-  - `RHSA`: Red Hat Security Advisory identifier (e.g., `RHSA-2025:0055`)
+  - `RHSA`: Red Hat Security Advisory identifier (e.g., `RHSA-2024:xxxx`)
 
 - **Optional arguments:**
   - `-h, --help`: Show this help message and exit.
-  - `-a`: Specify architecture. Default is `x86_64`, but `aarch64` can be specified.
-  - `-n`: No download. Just recreate the download script.
+  - `-a`: Specify architecture (default: `x86_64`). Use `-a` for `aarch64`.
+  - `-n`: No download. Skip downloading RPM packages.
   - `-g`: Skip debug/debuginfo packages.
-  - `-s`: Source RPM only.
-  - `-v, --version`: Show program's version number and exit.
+  - `-s`: Download source RPMs only.
+  - `-c, --contacts`: Path to `contacts.json` (default: `contacts.default.json`).
+  - `-t, --template`: Path to report template (default: `report_template.default.txt`).
+  - `-o, --outdir`: Output directory for the report (default: current directory).
+  - `-d, --date`: Set report date (YYYY-MM-DD). Default is today.
+  - `--advisory-list`: Path to advisory list file (default: `report-advisory.txt`).
+  - `--force-report`: Force report generation regardless of affected products.
+  - `--force-download`: Force RPM download regardless of affected products.
 
 ## Example Execution
 ```bash
+# Basic usage
 get-errata.py RHSA-2025:8888
+
+# Specify custom date and force report generation
+get-errata.py -d 2025-01-01 --force-report RHSA-2025:8888
 ```
 
 ## Authentication
-Before running the tool, you need to obtain a Red Hat Subscription Management (RHSM) API key (Offline Token).  
+Before running the tool, you need to obtain a Red Hat Subscription Management (RHSM) API key (Offline Token).
 Generate the token from Red Hat's management portal:
 
-**Key Generation URL:**  
+**Key Generation URL:**
 [https://access.redhat.com/management/api](https://access.redhat.com/management/api)
 
 Export the token as an environment variable:
