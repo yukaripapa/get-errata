@@ -535,10 +535,13 @@ def main():
 
     # (Rest of the download logic remains unchanged)
     match = []
+    seen_src = set() # 重複登録防止用のセット
     for it in pkgs:
         if it['arch'] == 'src':
-            match.append(it)
-            break
+            if it['checksum'] not in seen_src:
+                match.append(it)
+                seen_src.add(it['checksum'])
+            # breakを削除し、すべてのsrc.rpmをリストに追加する
     pattern = r"^rhel-[891]0?-for-x86_64-[ab]"
     pattern_a = r"^rhel-[891]0?-for-aarch64-[ab]"
     if args.a:
