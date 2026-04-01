@@ -519,11 +519,11 @@ def main():
             report = generate_security_report(errata_id, info, pkgs, report_name, contacts, tpl_text, target_date)
             _Path(args.outdir).mkdir(parents=True, exist_ok=True)
             out = _Path(args.outdir) / f"{report_name}.txt"
-            with open(out, 'w', encoding='utf-8') as f:
+            
+            # Pythonの標準機能でCP932（WindowsのShift-JIS）とCRLF改行コードを指定して出力
+            with open(out, 'w', encoding='cp932', errors='replace', newline='\r\n') as f:
                 f.write(report)
 
-            cmd = f"/usr/bin/iconv  -f UTF-8 -t SHIFT_JIS {report_name}.txt >tmp_sjis.txt; /usr/bin/unix2dos -n tmp_sjis.txt  {report_name}.txt"
-            os.system(cmd)
             issue_dt = extract_issue_datetime(info)
             ok_ts = set_file_timestamp_to_issue(str(out), issue_dt)
             if ok_ts:
@@ -533,7 +533,6 @@ def main():
 
             print(f"Security report generated: {out} with date {target_date.strftime('%Y-%m-%d')}")
 
-    # (Rest of the download logic remains unchanged)
     match = []
     seen_src = set() # 重複登録防止用のセット
     for it in pkgs:
