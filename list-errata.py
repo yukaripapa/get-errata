@@ -23,6 +23,9 @@ REPORT_MARK = "need-action to generate report"
 SUPPORT_LIST_PATH = 'default-support-list.txt'
 REPORT_ADVISORY_FILE = 'report-advisory.txt'
 
+# --- 401回避のためのトークン更新間隔 ---
+TOKEN_REFRESH_INTERVAL = 30
+
 # --- Teams Notification Settings ---
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
 if WEBHOOK_URL is None or WEBHOOK_URL.strip() == '':
@@ -179,7 +182,6 @@ def load_support_list(path: str) -> set:
         pass
     return set(names)
 
-# --- [修正箇所] synopsisだけでなく、APIのseverityフィールドも確実にチェックする ---
 def has_high_severity(body: dict) -> bool:
     synopsis = (body.get('synopsis') or '').lower()
     severity = (body.get('severity') or '').lower()
@@ -221,7 +223,6 @@ def base_before_colon(token: str) -> str:
     parts = token.split(':', 1)
     return parts[0]
 
-# --- [修正箇所] 引数として文字列(synopsis)ではなく辞書(body)を受け取るように変更 ---
 def should_mark(body: dict, support_names: set) -> bool:
     synopsis = body.get('synopsis', '')
     pkg = package_from_synopsis(synopsis)
@@ -338,7 +339,13 @@ def main():
         current_no = start_no
         print(f"[Reverse] 指定開始ID: {start_id} から {args.reverse_count} 件分を逆方向にスキャンします (レポート生成のみ)。")
         
+        scan_steps = 0 # 追加: スキャン回数カウンタ
         for i in range(args.reverse_count):
+            scan_steps += 1
+            if scan_steps % TOKEN_REFRESH_INTERVAL == 0:
+                print(f"[INFO] 401エラー防止のためアクセストークンを更新します (スキャン回数: {scan_steps})...")
+                access_token = get_access_token(offline_token)
+
             time.sleep(args.sleep)
             
             found_any = False
@@ -354,7 +361,6 @@ def main():
                 advisory_id = body.get('id', f'UNKNOWN-{current_no}')
                 synopsis = body.get('synopsis', '')
                 
-                # --- [修正箇所] should_markにbody全体を渡す ---
                 found_any = True if (should_generate and should_mark(body, support_names)) else False
                 
                 if found_any is True:
@@ -379,10 +385,16 @@ def main():
     lookup_no = increment_lookup_no(last_lookup)
     errata_list = []
     fetch_count = 0
+    scan_steps = 0 # 追加: スキャン回数カウンタ
     
     for _ in range(0, MAX_FETCH_COUNT):
         error_count = 0
         for _ in range(0, MAX_ERROR_COUNT):
+            scan_steps += 1
+            if scan_steps % TOKEN_REFRESH_INTERVAL == 0:
+                print(f"[INFO] 401エラー防止のためアクセストークンを更新します (スキャン回数: {scan_steps})...")
+                access_token = get_access_token(offline_token)
+
             time.sleep(args.sleep)
             
             data = fetch_errata(access_token, f'RHSA-{lookup_no}')
@@ -402,7 +414,6 @@ def main():
                 if check_affected_products(data):
                     should_generate = True
                 
-                # --- [修正箇所] should_markにbody全体を渡す ---
                 mark = REPORT_MARK if (should_generate and should_mark(body, support_names)) else ''
                 
                 display_id = advisory_id if not mark else f"**{advisory_id}**"
@@ -425,6 +436,12 @@ def main():
             
     next_download_list = []
     for e in download_list:
+        # ダウンロード用の再取得時にもトークン切れ対策を追加
+        scan_steps += 1
+        if scan_steps % TOKEN_REFRESH_INTERVAL == 0:
+            print(f"[INFO] 401エラー防止のためアクセストークンを更新します (スキャン回数: {scan_steps})...")
+            access_token = get_access_token(offline_token)
+
         synopsis = e.get('synopsis', '')
         advisory_id = e.get('id', '')
         advisory_no = advisory_id[5:] if advisory_id else ''
@@ -438,7 +455,6 @@ def main():
         if check_affected_products(data):
             should_generate = True
         
-        # --- [修正箇所] 取得したデータのbodyを使用して判定する ---
         fetched_body = data.get('body', e) if data else e
         mark = REPORT_MARK if (should_generate and should_mark(fetched_body, support_names)) else ''
         
