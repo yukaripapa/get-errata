@@ -25,23 +25,18 @@ REPORT_ADVISORY_FILE = 'report-advisory.txt'
 
 # --- Teams Notification Settings ---
 WEBHOOK_URL = os.getenv('WEBHOOK_URL')
-# Read Teams webhook URL from environment (same style as OFFLINE_TOKEN)
 if WEBHOOK_URL is None or WEBHOOK_URL.strip() == '':
     raise RuntimeError('WEBHOOK_URL 環境変数が設定されていません。')
 MENTION_LIST = ['TEAMS-USER1', 'TEAMS-USER2']
-# Read mention list from environment variable MENTION_LIST.
-# Accept comma/space-separated values or a JSON array string.
 _env_mentions = os.getenv('MENTION_LIST')
 if _env_mentions:
     try:
-        # Try JSON first (e.g., '["alice","bob"]')
         parsed = json.loads(_env_mentions)
         if isinstance(parsed, list):
             MENTION_LIST = [str(x).strip() for x in parsed if str(x).strip()]
         else:
             raise ValueError
     except Exception:
-        # Fallback: split by commas or whitespace
         tokens = re.split(r'[,\\s]+', _env_mentions)
         MENTION_LIST = [t.strip() for t in tokens if t.strip()]
 
@@ -89,10 +84,6 @@ def make_card(body, mention_list):
     return data
 
 def send_teams_notification(advisory_id, synopsis):
-    """
-    アドバイザリIDに対応するレポート番号を特定し、レポート内容を読み込んでTeamsに通知する
-    """
-    # 1. report-advisory.txt から レポート番号を検索
     report_no = None
     if os.path.exists(REPORT_ADVISORY_FILE):
         try:
@@ -110,8 +101,6 @@ def send_teams_notification(advisory_id, synopsis):
         print(f"[WARN] Notification skipped: Report number not found for {advisory_id}")
         return
 
-    # 2. 生成されたレポートファイルを読み込む
-    # ディレクトリ構成: ./<advisory_id>/<report_no>.txt
     report_path = os.path.join(f"./", f"{report_no}.txt")
     report_lines = []
     
@@ -125,15 +114,12 @@ def send_teams_notification(advisory_id, synopsis):
     else:
         report_lines = ["(Report file not found)"]
 
-    # 3. 通知用 body の作成
     body = []
     body.append(f"Advisory URL: https://access.redhat.com/errata/{advisory_id}")
     body.append(f"Synopsis: {synopsis}")
     body.append(f"should be mapped to Report ID:   {report_no}")
     body.append("-" * 40)
-    # body.extend(report_lines)
 
-    # 4. Webhook 送信
     card = make_card(body, MENTION_LIST)
     try:
         print(f"[NOTIFY] Sending Teams notification for {advisory_id}...")
@@ -152,7 +138,6 @@ def json_value(data, key):
     except json.JSONDecodeError:
         return None
 
-
 def get_access_token(offline_token):
     payload = {
         "grant_type": "refresh_token",
@@ -166,16 +151,21 @@ def get_access_token(offline_token):
         raise RuntimeError('access_token を取得できませんでした。')
     return token
 
-
 def fetch_errata(access_token, errata_id):
     url = f"{API_BASE}/errata/{errata_id}"
     headers = {"Authorization": f"Bearer {access_token}"}
-    r = requests.get(url, headers=headers)
-    if r.status_code == 404:
+    try:
+        r = requests.get(url, headers=headers)
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()
+    except requests.exceptions.HTTPError as e:
+        print(f"[WARN] API HTTP Error fetching {errata_id}: {e}")
         return None
-    r.raise_for_status()
-    return r.json()
-
+    except requests.exceptions.RequestException as e:
+        print(f"[WARN] Network Error fetching {errata_id}: {e}")
+        return None
 
 def load_support_list(path: str) -> set:
     names = []
@@ -189,10 +179,11 @@ def load_support_list(path: str) -> set:
         pass
     return set(names)
 
-
-def synopsis_has_high(synopsis: str) -> bool:
-    s = (synopsis or '').lower()
-    return ('important' in s) or ('critical' in s)
+# --- [修正箇所] synopsisだけでなく、APIのseverityフィールドも確実にチェックする ---
+def has_high_severity(body: dict) -> bool:
+    synopsis = (body.get('synopsis') or '').lower()
+    severity = (body.get('severity') or '').lower()
+    return ('important' in severity) or ('critical' in severity) or ('important' in synopsis) or ('critical' in synopsis)
 
 def check_affected_products(info):
     if not info or 'body' not in info:
@@ -216,7 +207,6 @@ def check_affected_products(info):
             print(f" [SKIP] {p}")
     return match_found
 
-
 def package_from_synopsis(synopsis: str) -> str:
     t = (synopsis or '').strip()
     m = re.match(r"^(Important|Critical|Moderate):\s*(.*)$", t, flags=re.IGNORECASE)
@@ -225,39 +215,30 @@ def package_from_synopsis(synopsis: str) -> str:
     m2 = re.match(r"^([A-Za-z0-9_.:-]+)", t)
     return m2.group(1).lower() if m2 else ''
 
-
 def base_before_colon(token: str) -> str:
-    # Return substring before ':' if present; else the original token
     if token is None:
         return ''
     parts = token.split(':', 1)
     return parts[0]
 
-
-def should_mark(synopsis: str, support_names: set) -> bool:
+# --- [修正箇所] 引数として文字列(synopsis)ではなく辞書(body)を受け取るように変更 ---
+def should_mark(body: dict, support_names: set) -> bool:
+    synopsis = body.get('synopsis', '')
     pkg = package_from_synopsis(synopsis)
     base = base_before_colon(pkg)
-    # exact match OR base-before-colon match
     pkg_match = (pkg in support_names) or (base in support_names)
-    return bool(pkg_match and synopsis_has_high(synopsis))
-
+    return bool(pkg_match and has_high_severity(body))
 
 def update_report_mapping(advisory_id: str):
-    """
-    report-advisory.txt を読み込み、アドバイザリIDがなければ新規レポート番号を採番して追記する。
-    レポート番号形式: LYY-XXXX-00 (YY:西暦下2桁, XXXX:連番)
-    """
     if not advisory_id:
         return
 
-    # 現在の年のプレフィックス (例: "L25")
     current_yy = datetime.now().strftime("%y")
     prefix = f"L{current_yy}"
     
     max_seq = 0
     exists = False
     
-    # ファイル読み込みと解析
     if os.path.exists(REPORT_ADVISORY_FILE):
         try:
             with open(REPORT_ADVISORY_FILE, 'r', encoding='utf-8') as f:
@@ -266,15 +247,11 @@ def update_report_mapping(advisory_id: str):
                     if len(parts) >= 2:
                         rep_no, adv_id = parts[0], parts[1]
                         
-                        # 既に存在するかチェック
                         if adv_id == advisory_id:
                             exists = True
                         
-                        # 連番の最大値を取得 (現在の年のもののみ対象)
-                        # 形式 LYY-XXXX-00 を想定
                         if rep_no.startswith(prefix) and rep_no.endswith("-00"):
                             try:
-                                # L25-XXXX-00 -> split('-') -> ['L25', 'XXXX', '00']
                                 seq_str = rep_no.split('-')[1]
                                 seq = int(seq_str)
                                 if seq > max_seq:
@@ -285,29 +262,27 @@ def update_report_mapping(advisory_id: str):
             print(f"[WARN] Failed to read {REPORT_ADVISORY_FILE}: {e}")
 
     if exists:
-        # print(f"[INFO] Advisory {advisory_id} is already in {REPORT_ADVISORY_FILE}.")
         return
 
-    # 新しい番号の生成 (最大値 + 1)
     new_seq = max_seq + 1
     new_report_no = f"{prefix}-{str(new_seq).zfill(4)}-00"
     
-    # ファイルへ追記
     try:
         with open(REPORT_ADVISORY_FILE, 'a', encoding='utf-8') as f:
-            # ファイル末尾に改行がない場合を考慮しつつ書き込み（通常は新規行として追加）
             f.write(f"{new_report_no}\t{advisory_id}\n")
             f.close()
         print(f"[INFO] Added to {REPORT_ADVISORY_FILE}: {new_report_no}\t{advisory_id}")
     except Exception as e:
         print(f"[ERROR] Failed to write to {REPORT_ADVISORY_FILE}: {e}")
 
-
-def run_report(advisory_id: str, synopsis: str):
+def run_report(advisory_id: str, synopsis: str, sleep_time: int = 5):
     if not advisory_id:
         return
     
-    # get-errata.pyを呼ぶ前にファイルが更新されている必要がある
+    if sleep_time > 0:
+        print(f"[REPORT] Sleeping {sleep_time} seconds before calling get-errata.py...")
+        time.sleep(sleep_time)
+        
     update_report_mapping(advisory_id)
 
     cmd = f"./get-errata/get-errata.py -c ./contacts.default.json -t ./report_template.default.txt --advisory-list ./report-advisory.txt -o ./ -n {advisory_id}"
@@ -315,29 +290,24 @@ def run_report(advisory_id: str, synopsis: str):
     try:
         ret = os.system(cmd)
         if ret == 0:
-            # レポート生成成功時に通知を送信
             send_teams_notification(advisory_id,synopsis)
         else:
             print(f"[REPORT] Command failed with return code: {ret}")
     except Exception as e:
         print(f"[REPORT] failed: {e}")
 
-
 def increment_lookup_no(lookup_no: str) -> str:
     year, no = lookup_no.split(":")
     no_i = int(no) + 1
     return f"{year}:{str(no_i).zfill(4)}"
 
-# New: decrement number part (one step back)
 def decrement_lookup_no(lookup_no: str) -> str:
     year, no = lookup_no.split(":")
     no_i = max(1, int(no) - 1)
     return f"{year}:{str(no_i).zfill(4)}"
 
-
 MAX_ERROR_COUNT = 400
 MAX_FETCH_COUNT = 40
-
 
 def main():
     parser = argparse.ArgumentParser(description='Red Hat Errata crawler wrapper')
@@ -347,6 +317,8 @@ def main():
                         help='How many IDs to go backward (default: 1000)')
     parser.add_argument('--sleep', type=int, default=5,
                         help='Sleep seconds between API calls (default: 5)')
+    parser.add_argument('--exec-sleep', type=int, default=5,
+                        help='Sleep seconds before executing get-errata.py to prevent HTTP 500 (default: 5)')
     args = parser.parse_args()
 
     offline_token = os.getenv('OFFLINE_TOKEN')
@@ -359,15 +331,16 @@ def main():
 
     # === Reverse Back-Report mode ===
     if args.reverse_start:
-        # Accept either RHSA-YYYY:NNNN or RHBA-YYYY:NNNN as starting point
         start_id = args.reverse_start.strip()
         if not re.match(r'^(RHSA|RHBA)-\d{4}:\d{4,5}$', start_id):
             raise RuntimeError('書式エラー: --reverse-start は RHSA-YYYY:NNNN または RHBA-YYYY:NNNN を指定してください。')
-        start_no = start_id[5:]  # YYYY:NNNN
+        start_no = start_id[5:]
         current_no = start_no
         print(f"[Reverse] 指定開始ID: {start_id} から {args.reverse_count} 件分を逆方向にスキャンします (レポート生成のみ)。")
+        
         for i in range(args.reverse_count):
-            # Try both RHSA and RHBA for the current number
+            time.sleep(args.sleep)
+            
             found_any = False
             for typ in ('RHSA', 'RHBA'):
                 advisory_key = f'{typ}-{current_no}'
@@ -380,13 +353,14 @@ def main():
                 body = data.get('body', {})
                 advisory_id = body.get('id', f'UNKNOWN-{current_no}')
                 synopsis = body.get('synopsis', '')
-                found_any = True if (should_generate and should_mark(synopsis, support_names)) else False
-                # Match generate report ONLY (no download). get-errata.py -n already skips download.
+                
+                # --- [修正箇所] should_markにbody全体を渡す ---
+                found_any = True if (should_generate and should_mark(body, support_names)) else False
+                
                 if found_any is True:
                     print(f"[Reverse] {advisory_id} : {synopsis} => Generating Security News...")
-                    run_report(advisory_id,synopsis)
-                    time.sleep(args.sleep)
-            # Go to previous number regardless of found status
+                    run_report(advisory_id, synopsis, args.exec_sleep)
+            
             current_no = decrement_lookup_no(current_no)
         print('[Reverse] 逆スキャン完了。')
         return
@@ -402,16 +376,19 @@ def main():
         return
 
     last_lookup = last_lookup_full[5:]
-    lookup_no = increment_lookup_no(last_lookup)  # 成否に関係なく前進
+    lookup_no = increment_lookup_no(last_lookup)
     errata_list = []
     fetch_count = 0
+    
     for _ in range(0, MAX_FETCH_COUNT):
         error_count = 0
-        time.sleep(args.sleep)
         for _ in range(0, MAX_ERROR_COUNT):
+            time.sleep(args.sleep)
+            
             data = fetch_errata(access_token, f'RHSA-{lookup_no}')
             if data is None:
                 data = fetch_errata(access_token, f'RHBA-{lookup_no}')
+                
             if data is None:
                 error_count += 1
             else:
@@ -424,12 +401,16 @@ def main():
                 should_generate = False
                 if check_affected_products(data):
                     should_generate = True
-                mark = REPORT_MARK if (should_generate and should_mark(synopsis, support_names)) else ''
+                
+                # --- [修正箇所] should_markにbody全体を渡す ---
+                mark = REPORT_MARK if (should_generate and should_mark(body, support_names)) else ''
+                
                 display_id = advisory_id if not mark else f"**{advisory_id}**"
                 print(f"Scanning {display_id} : {synopsis} {mark}")
                 if mark == REPORT_MARK:
-                    run_report(advisory_id,synopsis)
-            lookup_no = increment_lookup_no(lookup_no)  # 成否に関係なく前進
+                    run_report(advisory_id, synopsis, args.exec_sleep)
+                    
+            lookup_no = increment_lookup_no(lookup_no)
             if error_count == MAX_ERROR_COUNT:
                 break
         print(f"Total new {fetch_count} errata found.")
@@ -441,6 +422,7 @@ def main():
         syn = e.get('synopsis', '')
         if re.search(r'(kernel|glibc)', syn) and not re.search(r'kernel-rt', syn):
             download_list.append(e)
+            
     next_download_list = []
     for e in download_list:
         synopsis = e.get('synopsis', '')
@@ -449,28 +431,42 @@ def main():
         if advisory_no > last_lookup:
             next_download_list.append(e)
         should_generate = False
+        
+        time.sleep(args.sleep)
         data = fetch_errata(access_token, advisory_id)
+        
         if check_affected_products(data):
             should_generate = True
-        mark = REPORT_MARK if (should_generate and should_mark(synopsis, support_names)) else ''
+        
+        # --- [修正箇所] 取得したデータのbodyを使用して判定する ---
+        fetched_body = data.get('body', e) if data else e
+        mark = REPORT_MARK if (should_generate and should_mark(fetched_body, support_names)) else ''
+        
         display_id = advisory_id if not mark else f"**{advisory_id}**"
         print(f"{display_id} {synopsis} {mark}")
         if mark == REPORT_MARK:
-            run_report(advisory_id,synopsis)
+            run_report(advisory_id, synopsis, args.exec_sleep)
 
-        # ディレクトリが存在するかチェック
         if os.path.exists(advisory_id) and os.path.isdir(advisory_id):
             print(f"[REPORT] Directory '{advisory_id}' already exists. Skipping DOWNLOADING.")
             continue
+            
+        if args.exec_sleep > 0:
+            print(f"[DOWNLOAD] Sleeping {args.exec_sleep} seconds before calling get-errata.py...")
+            time.sleep(args.exec_sleep)
+            
         os.system(f"mkdir {advisory_id}; cd {advisory_id}; ../get-errata/get-errata.py -c ../contacts.default.json -t ../report_template.default.txt --advisory-list ../report-advisory.txt -o ../ -g {advisory_id}")
+        
     if next_download_list:
         print("以上のerrataのダウンロードを実行しました。")
     else:
         print("errataはありません。")
+        
     if next_download_list:
         last_id = next_download_list[-1].get('id', '')
         if last_id:
             with open(lookup_file_path, 'w', encoding='utf-8') as f:
                 print(last_id, file=f)
+
 if __name__ == '__main__':
     main()
