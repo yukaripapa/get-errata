@@ -1,12 +1,6 @@
 #!/usr/bin/python
 # SPDX-License-Identifier: GPL-2.0-or-later
-# list-errata_v3_4.py
-# - Reads default-support-list.txt at runtime
-# - Package = 2nd word after severity prefix in synopsis
-# - Match rule: exact match OR base-before-colon match (e.g., 'gimp:2.8' matches 'gimp')
-# - Mark only when package matches AND synopsis has Important/Critical
-# - When mark, run: ./get-errata.py -n {errata-id}
-# - ALWAYS advance lookup_no each loop
+# list-errata_v3_4.py (Modified with dynamic scan loop)
 
 import re
 import os
@@ -16,6 +10,7 @@ import time
 import argparse
 import sys
 from datetime import datetime
+from collections import deque  # 履歴管理用に追加
 
 TOKEN_URL = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
 API_BASE = "https://api.access.redhat.com/management/v1"
@@ -131,8 +126,6 @@ def send_teams_notification(advisory_id, synopsis):
         print("[NOTIFY] Success.")
     except requests.exceptions.RequestException as e:
         print(f"Error occured in posting to teams: {e}", file=sys.stderr)
-
-# ---------------------------------------
 
 def json_value(data, key):
     try:
@@ -307,9 +300,6 @@ def decrement_lookup_no(lookup_no: str) -> str:
     no_i = max(1, int(no) - 1)
     return f"{year}:{str(no_i).zfill(4)}"
 
-MAX_ERROR_COUNT = 400
-MAX_FETCH_COUNT = 40
-
 def main():
     parser = argparse.ArgumentParser(description='Red Hat Errata crawler wrapper')
     parser.add_argument('--reverse-start', '-R', type=str,
@@ -339,7 +329,7 @@ def main():
         current_no = start_no
         print(f"[Reverse] 指定開始ID: {start_id} から {args.reverse_count} 件分を逆方向にスキャンします (レポート生成のみ)。")
         
-        scan_steps = 0 # 追加: スキャン回数カウンタ
+        scan_steps = 0
         for i in range(args.reverse_count):
             scan_steps += 1
             if scan_steps % TOKEN_REFRESH_INTERVAL == 0:
@@ -348,12 +338,11 @@ def main():
 
             time.sleep(args.sleep)
             
-            found_any = False
-            for typ in ('RHSA', 'RHBA'):
-                advisory_key = f'{typ}-{current_no}'
-                data = fetch_errata(access_token, advisory_key)
-                if data is None:
-                    continue
+            data = fetch_errata(access_token, f'RHSA-{current_no}')
+            if data is None:
+                data = fetch_errata(access_token, f'RHBA-{current_no}')
+
+            if data is not None:
                 should_generate = False            
                 if check_affected_products(data):
                     should_generate = True
@@ -371,7 +360,7 @@ def main():
         print('[Reverse] 逆スキャン完了。')
         return
 
-    # === Default forward-scan behavior ===
+    # === Default forward-scan behavior (Modified Dynamic Loop) ===
     lookup_file_path = "get-errata/last_lookup.txt"
     try:
         with open(lookup_file_path, 'r', encoding='utf-8') as f:
@@ -384,48 +373,80 @@ def main():
     last_lookup = last_lookup_full[5:]
     lookup_no = increment_lookup_no(last_lookup)
     errata_list = []
-    fetch_count = 0
-    scan_steps = 0 # 追加: スキャン回数カウンタ
     
-    for _ in range(0, MAX_FETCH_COUNT):
-        error_count = 0
-        for _ in range(0, MAX_ERROR_COUNT):
-            scan_steps += 1
-            if scan_steps % TOKEN_REFRESH_INTERVAL == 0:
-                print(f"[INFO] 401エラー防止のためアクセストークンを更新します (スキャン回数: {scan_steps})...")
-                access_token = get_access_token(offline_token)
+    # --- スキャン終了条件のチューニング用変数 ---
+    X_MAX_MISSES = 500      # 終了条件1: 連続でErrataが見つからなかったら終了する回数
+    Y_WINDOW_SIZE = 1000    # 終了条件2: 直近の履歴を保持するウィンドウサイズ
+    MAX_FETCH_LIMIT = 100   # 安全対策: 1回の実行で取得する最大Errata数
 
-            time.sleep(args.sleep)
+    fetch_count = 0
+    scan_steps = 0
+    consecutive_misses = 0
+    recent_history = deque(maxlen=Y_WINDOW_SIZE)
+
+    print(f"スキャン開始: {lookup_no} から")
+
+    while True:
+        scan_steps += 1
+        if scan_steps % TOKEN_REFRESH_INTERVAL == 0:
+            print(f"[INFO] 401エラー防止のためアクセストークンを更新します (スキャン回数: {scan_steps})...")
+            access_token = get_access_token(offline_token)
+
+        time.sleep(args.sleep)
+        
+        data = fetch_errata(access_token, f'RHSA-{lookup_no}')
+        if data is None:
+            data = fetch_errata(access_token, f'RHBA-{lookup_no}')
             
-            data = fetch_errata(access_token, f'RHSA-{lookup_no}')
-            if data is None:
-                data = fetch_errata(access_token, f'RHBA-{lookup_no}')
+        if data is None:
+            # エラッタが存在しない場合
+            consecutive_misses += 1
+            recent_history.append(False)
+        else:
+            # エラッタが存在した場合
+            consecutive_misses = 0
+            recent_history.append(True)
+            fetch_count += 1
+            
+            body = data.get('body', {})
+            advisory_id = body.get('id', f'UNKNOWN-{lookup_no}')
+            synopsis = body.get('synopsis', '')
+            errata_list.append(body)
+            
+            should_generate = False
+            if check_affected_products(data):
+                should_generate = True
+            
+            mark = REPORT_MARK if (should_generate and should_mark(body, support_names)) else ''
+            
+            display_id = advisory_id if not mark else f"**{advisory_id}**"
+            print(f"Scanning {display_id} : {synopsis} {mark}")
+            
+            if mark == REPORT_MARK:
+                run_report(advisory_id, synopsis, args.exec_sleep)
+                try:
+                    with open(lookup_file_path, 'w', encoding='utf-8') as f:
+                        print(advisory_id, file=f)
+                    print(f"[INFO] Updated last_lookup.txt with {advisory_id} after report generation.")
+                except Exception as e:
+                    print(f"[WARN] Failed to update {lookup_file_path}: {e}")
                 
-            if data is None:
-                error_count += 1
-            else:
-                body = data.get('body', {})
-                advisory_id = body.get('id', f'UNKNOWN-{lookup_no}')
-                synopsis = body.get('synopsis', '')
-                fetch_count += 1
-                error_count = 0
-                errata_list.append(body)
-                should_generate = False
-                if check_affected_products(data):
-                    should_generate = True
-                
-                mark = REPORT_MARK if (should_generate and should_mark(body, support_names)) else ''
-                
-                display_id = advisory_id if not mark else f"**{advisory_id}**"
-                print(f"Scanning {display_id} : {synopsis} {mark}")
-                if mark == REPORT_MARK:
-                    run_report(advisory_id, synopsis, args.exec_sleep)
-                    
-            lookup_no = increment_lookup_no(lookup_no)
-            if error_count == MAX_ERROR_COUNT:
-                break
-        print(f"Total new {fetch_count} errata found.")
-        break
+        # === 終了判定 ===
+        if consecutive_misses >= X_MAX_MISSES:
+            print(f"\n[終了] {X_MAX_MISSES}件連続でErrataが見つかりませんでした。最新に追いついたと判断します。")
+            break
+
+        if len(recent_history) == Y_WINDOW_SIZE and not any(recent_history):
+            print(f"\n[終了] 直近 {Y_WINDOW_SIZE} 件の範囲内にErrataが存在しませんでした。スキャンを打ち切ります。")
+            break
+            
+        if fetch_count >= MAX_FETCH_LIMIT:
+            print(f"\n[終了] 今回の取得上限（{MAX_FETCH_LIMIT}件）に達しました。")
+            break
+
+        lookup_no = increment_lookup_no(lookup_no)
+
+    print(f"\nTotal new {fetch_count} errata found.")
 
     # optional: kernel/glibc download path retained
     download_list = []
@@ -436,7 +457,6 @@ def main():
             
     next_download_list = []
     for e in download_list:
-        # ダウンロード用の再取得時にもトークン切れ対策を追加
         scan_steps += 1
         if scan_steps % TOKEN_REFRESH_INTERVAL == 0:
             print(f"[INFO] 401エラー防止のためアクセストークンを更新します (スキャン回数: {scan_steps})...")
@@ -462,6 +482,12 @@ def main():
         print(f"{display_id} {synopsis} {mark}")
         if mark == REPORT_MARK:
             run_report(advisory_id, synopsis, args.exec_sleep)
+            try:
+                with open(lookup_file_path, 'w', encoding='utf-8') as f:
+                    print(advisory_id, file=f)
+                print(f"[INFO] Updated last_lookup.txt with {advisory_id} after report generation.")
+            except Exception as e:
+                print(f"[WARN] Failed to update {lookup_file_path}: {e}")
 
         if os.path.exists(advisory_id) and os.path.isdir(advisory_id):
             print(f"[REPORT] Directory '{advisory_id}' already exists. Skipping DOWNLOADING.")
