@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+!/usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Tsuyoshi Nagata
 # Modified for multi-line product display
@@ -542,7 +542,7 @@ def main():
                 seen_src.add(it['checksum'])
             # breakを削除し、すべてのsrc.rpmをリストに追加する
     pattern = r"^rhel-[891]0?-for-x86_64-[ab]"
-    pattern_a = r"^rhel-[891]0?-for-aarch64-[ab]"
+    pattern_a = r"^rhel-[891]0?-for-aarch64-"
     if args.a:
         pattern = pattern_a
 
