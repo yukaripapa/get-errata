@@ -1,11 +1,11 @@
-!/usr/bin/python3
+#! /usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Tsuyoshi Nagata
 # Modified for multi-line product display
 # Modified to support APPLICABLE_SYSTEMS detection
 # Modified to support custom report date via -d/--date
 #
-VERSION = "14.5"
+VERSION = "16.0"
 from itertools import count
 import re, os, json, requests, time, sys, argparse, hashlib
 from datetime import datetime
@@ -144,6 +144,7 @@ def check_affected_products(info):
     target_products = {
         "Red Hat Enterprise Linux Server - AUS",
         "Red Hat Enterprise Linux for x86_64 - Extended Update Support",
+        "Red Hat Enterprise Linux for x86_64 - Extended Life Cycle",
         "Red Hat Enterprise Linux for x86_64",
         "Red Hat Enterprise Linux Server - Extended Life Cycle Support"
     }
@@ -239,6 +240,322 @@ def format_report_text(text: str, width: int = 80, indent: int = 3) -> str:
     return '\n'.join(out)
 
 
+
+
+def is_cve_id(value):
+    """Return True when value looks like a CVE identifier."""
+    return bool(re.fullmatch(r'CVE-\d{4}-\d{4,}', (value or '').strip(), re.IGNORECASE))
+
+
+def normalize_cve_id(value):
+    """Normalize CVE identifier to upper-case canonical form."""
+    return (value or '').strip().upper()
+
+
+def fetch_cve_vex(cve_id):
+    """Fetch public Red Hat CSAF VEX JSON for a CVE identifier."""
+    cve_id = normalize_cve_id(cve_id)
+    m = re.fullmatch(r'CVE-(\d{4})-\d{4,}', cve_id)
+    if not m:
+        raise ValueError(f"Invalid CVE identifier: {cve_id}")
+    year = m.group(1)
+    url = f"https://security.access.redhat.com/data/csaf/v2/vex/{year}/{cve_id.lower()}.json"
+    r = requests.get(url, headers={"accept": "application/json"}, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def load_json_file(path):
+    """Load a local JSON file."""
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def first_vulnerability(vex):
+    vulns = vex.get('vulnerabilities') or []
+    return vulns[0] if vulns else {}
+
+
+def extract_note_text(notes, category):
+    for n in notes or []:
+        if n.get('category') == category and n.get('text'):
+            return n.get('text')
+    return ''
+
+
+def extract_package_name_from_title(text):
+    """Extract the base package/component name from Red Hat title text.
+
+    Examples:
+      'kernel: nfsd: fix ...'            -> 'kernel'
+      'openssh: user enumeration ...'    -> 'openssh'
+      'Important: kernel security update' -> 'kernel'
+    """
+    if not text:
+        return None
+    s = str(text).strip()
+    severity_prefixes = {
+        'low', 'moderate', 'important', 'critical',
+        'security advisory (low)', 'security advisory (moderate)',
+        'security advisory (important)', 'security advisory (critical)',
+    }
+    if ':' in s:
+        first, rest = s.split(':', 1)
+        first = first.strip()
+        if first.lower() not in severity_prefixes:
+            # VEX title may use display name such as OpenSSH, while product_id uses rpm name openssh.
+            return first.lower() or None        
+        s = rest.strip()
+    token = re.split(r'[:\s,]+', s, maxsplit=1)[0].strip()
+    return token.lower() if token else None
+
+
+
+def normalize_cve_summary_for_description(summary, package_name):
+    """Avoid duplicating package name when title already starts with '<package>:'"""
+    summary = summary or ''
+    pkg = package_name or ''
+    if pkg and summary.lower().startswith(pkg.lower() + ':'):
+        return summary
+    return f"{pkg}: {summary}" if pkg else summary
+
+
+def extract_package_name_from_product_id(product_id):
+    """Extract package name from '<stream>:<package>-0:<version>.<arch>'."""
+    if not product_id or ':' not in product_id:
+        return None
+    component = product_id.split(':', 1)[1]
+    m = re.match(r'(?P<pkg>.+?)-\d+:', component)
+    if m:
+        return m.group('pkg')
+    return component.split('-', 1)[0] if component else None
+
+
+def is_excluded_cve_stream(stream):
+    """Exclude CVE streams that must not be displayed.
+
+    Excluded:
+      - E4S
+      - TUS
+      - EXTENSION
+    """
+    stream_upper = (stream or '').upper()
+    return bool(
+        re.search(r'(^|[.\-])E4S($|[.\-])', stream_upper) or
+        re.search(r'(^|[.\-])TUS($|[.\-])', stream_upper) or
+        re.search(r'(^|[.\-])EXTENSION($|[.\-])', stream_upper)
+    )
+
+
+def is_target_cve_product_id(product_id, target_pkg=None, arch='x86_64'):
+    """Return True for product IDs to be shown in the CVE patch table.
+
+    The package is not hard-coded. It must match the package extracted from
+    the VEX title/document title.
+
+    Examples:
+      title/package = openssh -> match openssh-0:...x86_64 only
+      title/package = kernel  -> match kernel-0:...x86_64 only
+
+    For AUS, src-only entries are allowed, but still only for target_pkg.
+    """
+    if not product_id or ':' not in product_id:
+        return False
+    stream, component = product_id.split(':', 1)
+    stream_upper = stream.upper()
+
+    if is_excluded_cve_stream(stream):
+        return False
+
+    m = re.fullmatch(r'(?P<pkg>[A-Za-z0-9_+.]+)-0:.+\.' + re.escape(arch), component)
+    if not m:
+        m_src = re.fullmatch(r'(?P<pkg>[A-Za-z0-9_+.]+)-0:.+\.src', component)
+        if '.AUS' in stream_upper and m_src:
+            return (not target_pkg) or m_src.group('pkg').lower() == str(target_pkg).lower()
+        return False
+
+    return (not target_pkg) or m.group('pkg').lower() == str(target_pkg).lower()
+
+
+def extract_cve_package_name(vex):
+    """Best-effort package name extraction. Prefer document/title over product_id."""
+    doc = vex.get('document') or {}
+    vuln = first_vulnerability(vex)
+
+    for candidate in [doc.get('title'), vuln.get('title'), vuln.get('summary')]:
+        pkg = extract_package_name_from_title(candidate)
+        if pkg:
+            return pkg
+
+    notes = vuln.get('notes') or []
+    for candidate in [extract_note_text(notes, 'summary'), extract_note_text(notes, 'description')]:
+        pkg = extract_package_name_from_title(candidate)
+        if pkg:
+            return pkg
+
+    return 'unknown'
+
+
+def extract_rhsa_id_from_url(url):
+    m = re.search(r'RHSA-\d{4}:\d+', url or '')
+    return m.group(0) if m else (url or '')
+
+
+def parse_cve_fixed_product_id(product_id, url, target_pkg='unknown', arch='x86_64'):
+    """Convert a Red Hat VEX fixed product ID into one Patch table row."""
+    if not is_target_cve_product_id(product_id, target_pkg=target_pkg, arch=arch):
+        return None
+
+    stream, _component = product_id.split(':', 1)
+    stream_upper = stream.upper()
+
+    if is_excluded_cve_stream(stream):
+        return None
+
+    if stream_upper == '7SERVER-ELS':
+        major_ver = '7'
+        vl = 'v.7els'
+    else:
+        vm = re.search(r'-(\d+\.\d+)', stream)
+        if not vm:
+            return None
+        minor_ver = vm.group(1)
+        major_ver = minor_ver.split('.')[0]
+        if '.AUS' in stream_upper:
+            vl = f"v.{minor_ver}aus"
+        elif any(x in stream_upper for x in ['.EUS', '.E2S']):
+            vl = f"v.{minor_ver}eus"
+        else:
+            vl = f"v.{minor_ver}"
+
+    pkg = extract_package_name_from_product_id(product_id) or target_pkg or 'unknown'
+    return {
+        'product_id': product_id,
+        'url': url,
+        'product_name': 'Red Hat Enterprise Linux',
+        'vl': vl,
+        'os': f"RHEL{major_ver}",
+        'package': pkg,
+        'patch_id': extract_rhsa_id_from_url(url),
+    }
+
+
+def collect_cve_patch_records(vex, arch='x86_64'):
+    """Collect fixed RHSA patch records from Red Hat CSAF VEX remediations."""
+    vuln = first_vulnerability(vex)
+    target_pkg = extract_cve_package_name(vex)
+    records = []
+    seen = set()
+
+    for remediation in vuln.get('remediations') or []:
+        if remediation.get('category') != 'vendor_fix':
+            continue
+        url = remediation.get('url', '')
+        if 'RHSA-' not in url:
+            continue
+        for product_id in remediation.get('product_ids') or []:
+            rec = parse_cve_fixed_product_id(product_id, url, target_pkg=target_pkg, arch=arch)
+            if not rec:
+                continue
+            key = (rec['vl'], rec['os'], rec['package'], rec['patch_id'])
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(rec)
+    return records
+
+
+def build_cve_patch_table(records):
+    return "\n".join(
+        f"{r['product_name']}, {r['vl']} , {r['os']} , {r['package']}, {r['patch_id']}"
+        for r in records
+    )
+
+
+def build_cve_report_info(cve_id, vex):
+    """Create errata-like info so the existing report template can be reused."""
+    doc = vex.get('document') or {}
+    tracking = doc.get('tracking') or {}
+    severity = ((doc.get('aggregate_severity') or {}).get('text') or '').strip()
+    vuln = first_vulnerability(vex)
+    notes = vuln.get('notes') or []
+    title = vuln.get('title') or doc.get('title') or ''
+    summary = title or extract_note_text(notes, 'summary') or doc.get('title') or cve_id
+    description = extract_note_text(notes, 'description') or summary
+    package_name = extract_cve_package_name(vex)
+    fix_line = normalize_cve_summary_for_description(summary, package_name)
+
+    references = []
+    for ref in vuln.get('references') or []:
+        if ref.get('url'):
+            references.append({
+                'href': ref.get('url'),
+                'id': ref.get('summary') or ref.get('url'),
+                'title': ref.get('summary') or ref.get('url'),
+                'type': ref.get('category') or 'external',
+            })
+    if not any(cve_id.lower() in (r.get('href', '').lower()) for r in references):
+        references.append({
+            'href': f"https://access.redhat.com/security/cve/{cve_id}",
+            'id': cve_id,
+            'title': cve_id,
+            'type': 'cve',
+        })
+
+    body = {
+        'id': cve_id,
+        'cves': cve_id,
+        'severity': severity.capitalize() if severity else '',
+        'synopsis': f"{severity.capitalize() + ': ' if severity else ''}{package_name} security update",
+        'summary': summary,
+        'description': f"Security Fix(es):\n\n* {fix_line} ({cve_id})\n\n{description}",
+        'issued': tracking.get('initial_release_date') or tracking.get('current_release_date') or '',
+        'lastUpdated': tracking.get('current_release_date') or '',
+        'affectedProducts': ['Red Hat Enterprise Linux for x86_64 - Extended Update Support'],
+        'references': references,
+        'bugzillas': [],
+        'type': 'security',
+        'typeSeverity': f"Security Advisory ({severity.capitalize()})" if severity else 'Security Advisory',
+        'solution': 'Refer to the related Red Hat Security Advisory listed in the patch table.',
+    }
+    return {'body': body}
+
+
+def load_report_map(path):
+    report_map = {}
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        report_map[parts[1]] = parts[0]
+        except Exception as e:
+            print(f"Warning: Failed to load {path}: {e}")
+    return report_map
+
+
+def guess_report_number(target):
+    m = re.search(r'RHSA-20(\d{2}):(\d+)', target)
+    if m:
+        return f"L{m.group(1)}-{m.group(2)}-0T"
+    m = re.search(r'CVE-20(\d{2})-(\d+)', target, re.IGNORECASE)
+    if m:
+        return f"L{m.group(1)}-{m.group(2)}-0T"
+    temp_name = target.split(":")[1] if ":" in target else target
+    return f"LYY-{temp_name}-00"
+
+
+def resolve_report_number(target, advisory_list):
+    report_map = load_report_map(advisory_list)
+    if target in report_map:
+        print(f"Report number found in {advisory_list}: {report_map[target]}")
+        return report_map[target]
+    report_name = guess_report_number(target)
+    print(f"Report number generated: {report_name}")
+    return report_name
+
+
 def detect_applicable_systems(info):
     if not info or 'body' not in info:
         return "PRIMEQUEST, PRIMERGY"
@@ -251,12 +568,12 @@ def detect_applicable_systems(info):
         return "PRIMEQUEST, PRIMERGY"
 
 
-def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_text, target_date):
+def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_text, target_date, product_table_rows_override=None, footer_block_override=None, pkg_name_override=None, errata_display_id=None):
     if not info or 'body' not in info:
         return 'Error: Invalid errata information'
     body = info['body']
     
-    pkg_name = extract_package_name(info)
+    pkg_name = pkg_name_override or extract_package_name(info)
     summary = body.get('summary', '')
     
     products = body.get('affectedProducts')
@@ -358,8 +675,12 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         os_str = f"RHEL{rhel_major}(Intel64)"
         table_lines.append(f"{base_os_name}, {vl_str:<5}, {os_str:<19}{suffix}")
 
-    product_table_rows = "\n".join(table_lines)
-    footer_block = "\n".join(footnotes)
+    if product_table_rows_override is not None:
+        product_table_rows = product_table_rows_override
+        footer_block = footer_block_override or ''
+    else:
+        product_table_rows = "\n".join(table_lines)
+        footer_block = "\n".join(footnotes)
 
     # Use the provided target_date instead of now()
     date = target_date.strftime('%Y.%m.%d')
@@ -398,7 +719,7 @@ def generate_security_report(errata_id, info, pkgs, report_num, contacts, tpl_te
         'ISSUER_EMAIL': issuer.get('email', ''),
         'ISSUER_PHONE': issuer.get('phone_mobile', ''),
         'PACKAGE_NAME': pkg_name,
-        'ERRATA_ID': errata_id,
+        'ERRATA_ID': errata_display_id or errata_id,
         'SUMMARY': formatted_summary,
         'DESCRIPTION': formatted_description,
         'PRODUCT_TABLE_ROWS': product_table_rows,
@@ -434,7 +755,8 @@ def main():
     ap.add_argument('--advisory-list', type=str, default='report-advisory.txt', help='Path to report-advisory.txt')
     ap.add_argument('--force-report', action='store_true', help='Force report generation regardless of affected products')
     ap.add_argument('--force-download', action='store_true', help='Force RPM download regardless of affected products')
-    ap.add_argument('RHSA', type=str, help='Red Hat Security Advisory identifier (e.g., RHSA-2024:4108)')
+    ap.add_argument('--cve-json', type=str, default=None, help='Use local Red Hat CSAF VEX JSON instead of downloading it')
+    ap.add_argument('RHSA', type=str, help='Red Hat Security Advisory or CVE identifier (e.g., RHSA-2024:4108 or CVE-2026-31402)')
     args = ap.parse_args()
 
     # Determine the report date
@@ -446,6 +768,67 @@ def main():
             sys.exit(1)
     else:
         target_date = datetime.now()
+
+    if is_cve_id(args.RHSA):
+        cve_id = normalize_cve_id(args.RHSA)
+        contacts_path = args.contacts or 'contacts.default.json'
+        # In CVE mode, use the CVE-specific template by default.
+        # If -t/--template is specified, keep the user-specified template.
+        template_path = args.template or 'report_template.default-cve.txt'
+        
+        contacts = load_contacts(contacts_path)
+        tpl_text = load_template(template_path)
+        arch = 'aarch64' if args.a else 'x86_64'
+
+        print(f"Fetching Red Hat CSAF VEX information for {cve_id}...")
+        if args.cve_json:
+            vex = load_json_file(args.cve_json)
+            print(f"CVE VEX information loaded from {args.cve_json}")
+        else:
+            vex = fetch_cve_vex(cve_id)
+            write_to_json(f"{cve_id.lower()}-vex.json", vex)
+            print(f"CVE VEX information saved to {cve_id.lower()}-vex.json")
+
+        patch_records = collect_cve_patch_records(vex, arch=arch)
+        if not patch_records:
+            print("Warning: No displayable RHSA remediations were found for the requested architecture/rules.")
+        else:
+            print("\n=== CVE displayable product IDs and RHSA URLs ===")
+            for r in patch_records:
+                print(f"\"{r['product_id']}\",")
+                print(f"\"url\": \"{r['url']}\"\n")
+            print("=== 3-2. Patch table preview ===")
+            print("3-2. 該当製品・対策Patch")
+            print("(18)製品名     ,(19)VL  ,(20)対象OS     ,(21)パッケージ名    ,(22)Patch ID.")
+            print("+--------------------------------------------------------------------------")
+            print(build_cve_patch_table(patch_records))
+            print("+--------------------------------------------------------------------------\n")
+
+        info = build_cve_report_info(cve_id, vex)
+        package_name = extract_cve_package_name(vex)
+        report_name = resolve_report_number(cve_id, args.advisory_list)
+        report = generate_security_report(
+            cve_id, info, [], report_name, contacts, tpl_text, target_date,
+            product_table_rows_override=build_cve_patch_table(patch_records),
+            footer_block_override='',
+            pkg_name_override=package_name,
+            errata_display_id=cve_id,
+        )
+
+        _Path(args.outdir).mkdir(parents=True, exist_ok=True)
+        out = _Path(args.outdir) / f"{report_name}.txt"
+        # CVE-based news output remains UTF-8 text. Do not convert to SJIS/CP932 or DOS CRLF.
+        with open(out, 'w', encoding='utf-8') as f:
+            f.write(report)
+
+        issue_dt = extract_issue_datetime(info)
+        ok_ts = set_file_timestamp_to_issue(str(out), issue_dt)
+        if ok_ts:
+            print(f'Adjusted report timestamp to issued date: {issue_dt.isoformat()}')
+        else:
+            print('Note: Failed to adjust report timestamp or issued date not available.')
+        print(f"Security report generated: {out} with date {target_date.strftime('%Y-%m-%d')}")
+        return
 
     offline_token = os.getenv('OFFLINE_TOKEN')
     if not offline_token:
