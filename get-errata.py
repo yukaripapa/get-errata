@@ -15,8 +15,9 @@ from string import Template
 from datetime import datetime, timezone
 
 import requests
+import hashlib
 
-VERSION = "21.0"
+VERSION = "24.0"
 SUPPORTED_RHEL_STREAM_PREFIXES = ("BASEOS-", "APPSTREAM-")
 
 
@@ -446,55 +447,659 @@ def generate_security_report(errata_id, info, report_num, contacts, tpl_text, ta
     return Template(tpl_text).safe_substitute(data) if tpl_text else (product_table_rows_override or "")
 
 
+
+def is_rhsa_id(value):
+    return bool(re.fullmatch(r"RHSA-\d{4}:\d+", (value or "").strip(), re.IGNORECASE))
+
+
+def json_value(data, key):
+    try:
+        if isinstance(data, str):
+            data = json.loads(data)
+        if isinstance(data, dict):
+            return data.get(key)
+    except Exception:
+        pass
+    return None
+
+
+def get_access_token(offline_token):
+    url = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
+    payload = {
+        "grant_type": "refresh_token",
+        "client_id": "rhsm-api",
+        "refresh_token": offline_token,
+    }
+    r = requests.post(url, data=payload, timeout=60)
+    r.raise_for_status()
+    token = json_value(r.text, "access_token")
+    if not token:
+        raise RuntimeError("Failed to retrieve access token from Red Hat SSO response.")
+    return token
+
+
+def fetch_errata_info(access_token, errata_id):
+    url = f"https://api.access.redhat.com/management/v1/errata/{errata_id}"
+    headers = {"Authorization": f"Bearer {access_token}", "accept": "application/json"}
+    r = requests.get(url, headers=headers, timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_errata_packages(access_token, errata_id, offset):
+    url = f"https://api.access.redhat.com/management/v1/errata/{errata_id}/packages/?limit=50&offset={offset}"
+    headers = {"Authorization": f"Bearer {access_token}", "accept": "application/json"}
+    r = requests.get(url, headers=headers, timeout=60)
+    r.raise_for_status()
+    return r.json()
+
+
+def calculate_sha256(filepath):
+    h = hashlib.sha256()
+    with open(filepath, 'rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_file_checksum(filepath, expected):
+    try:
+        return Path(filepath).exists() and calculate_sha256(filepath) == expected
+    except Exception:
+        return False
+
+
+def is_critical_kernel_file(filename):
+    critical_patterns = [
+        r'^kernel-modules-core-.*\.rpm$',
+        r'^kernel-modules-[0-9].*\.rpm$',
+        r'^kernel-core-.*\.rpm$',
+        r'^kernel-[0-9].*\.rpm$',
+    ]
+    exclude_patterns = [
+        r'^kernel-debug', r'^kernel-devel', r'^kernel-headers', r'^kernel-tools',
+        r'^kernel-doc', r'^kernel-abi', r'^kernel-modules-extra', r'^kernel-modules-internal'
+    ]
+    return (not any(re.match(p, filename) for p in exclude_patterns)) and any(re.match(p, filename) for p in critical_patterns)
+
+
+def _find_first_href(data):
+    if isinstance(data, dict):
+        for key in ('href', 'url', 'downloadUrl'):
+            value = data.get(key)
+            if isinstance(value, str) and value.startswith('http'):
+                return value
+        for value in data.values():
+            hit = _find_first_href(value)
+            if hit:
+                return hit
+    elif isinstance(data, list):
+        for item in data:
+            hit = _find_first_href(item)
+            if hit:
+                return hit
+    return None
+
+
+def _extract_href_from_text(text):
+    if not text:
+        return None
+    m = re.search(r'https?://[^\s"\']+', text)
+    return m.group(0) if m else None
+
+
+def _is_direct_download_response(resp):
+    ctype = (resp.headers.get('content-type') or '').lower()
+    dispo = (resp.headers.get('content-disposition') or '').lower()
+    return ('application/x-rpm' in ctype or 'application/octet-stream' in ctype or
+            '.rpm' in dispo or '.src.rpm' in dispo)
+
+
+def _save_response_content(resp, out_path):
+    with open(out_path, 'wb') as f:
+        for chunk in resp.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                f.write(chunk)
+
+
+def resolve_download_response(access_token, checksum):
+    endpoint = f"https://api.access.redhat.com/management/v1/packages/{checksum}/download"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    resp = requests.get(endpoint, headers=headers, timeout=60, stream=True, allow_redirects=False)
+
+    if resp.status_code in (301, 302, 303, 307, 308):
+        location = resp.headers.get('location')
+        if location:
+            return ('href', location)
+
+    if _is_direct_download_response(resp):
+        return ('response', resp)
+
+    text_hint = None
+    ctype = (resp.headers.get('content-type') or '').lower()
+    if 'json' in ctype:
+        try:
+            payload = resp.json()
+            href = _find_first_href(payload)
+            if href:
+                return ('href', href)
+        except Exception:
+            pass
+    try:
+        text_hint = resp.text
+    except Exception:
+        text_hint = None
+    href = _extract_href_from_text(text_hint)
+    if href:
+        return ('href', href)
+
+    # Final fallback: try with redirects enabled, because some environments may stream the RPM directly.
+    resp2 = requests.get(endpoint, headers=headers, timeout=300, stream=True, allow_redirects=True)
+    if _is_direct_download_response(resp2):
+        return ('response', resp2)
+    try:
+        payload = resp2.json()
+        href = _find_first_href(payload)
+        if href:
+            return ('href', href)
+    except Exception:
+        pass
+    try:
+        href = _extract_href_from_text(resp2.text)
+        if href:
+            return ('href', href)
+    except Exception:
+        pass
+    raise RuntimeError(f'Unable to resolve download URL/content for checksum {checksum}; status={resp.status_code}, content-type={ctype or "unknown"}')
+
+
+def download_file_with_retry(access_token, checksum, out_path, max_retries=3):
+    out_path = str(out_path)
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            mode, obj = resolve_download_response(access_token, checksum)
+            if mode == 'response':
+                _save_response_content(obj, out_path)
+            else:
+                with requests.get(obj, stream=True, timeout=300) as resp:
+                    resp.raise_for_status()
+                    _save_response_content(resp, out_path)
+            if Path(out_path).exists() and Path(out_path).stat().st_size > 0:
+                return True
+            raise RuntimeError(f'Downloaded file is empty: {out_path}')
+        except Exception as exc:
+            last_error = exc
+            try:
+                Path(out_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+            print(f"Retry {attempt}/{max_retries} failed for {Path(out_path).name}: {exc}")
+    if last_error:
+        print(f"Download failed for {Path(out_path).name}: {last_error}")
+    return False
+
+
+def extract_package_name(info):
+    if not info or 'body' not in info:
+        return 'unknown'
+    synopsis = (info['body'] or {}).get('synopsis', '')
+    m = re.search(r':\s*(\S+)\s+', synopsis)
+    return m.group(1) if m else 'unknown'
+
+
+def extract_rhel_version(pkgs):
+    for pkg in pkgs or []:
+        for cs in pkg.get('contentSets', []) or []:
+            m = re.search(r'rhel-(\d+)(?:\.(\d+))?-for-', cs)
+            if m:
+                return f"{m.group(1)}.{m.group(2)}" if m.group(2) else m.group(1)
+    return 'unknown'
+
+
+def check_affected_products(info):
+    if not info or 'body' not in info:
+        return False
+    products = (info['body'] or {}).get('affectedProducts') or []
+    if not products:
+        return False
+    target_products = {
+        'Red Hat Enterprise Linux Server - AUS',
+        'Red Hat Enterprise Linux for x86_64 - Extended Update Support',
+        'Red Hat Enterprise Linux for x86_64 - Extended Life Cycle',
+        'Red Hat Enterprise Linux for x86_64',
+        'Red Hat Enterprise Linux Server - Extended Life Cycle Support',
+    }
+    print('Checking affected products:')
+    matched = False
+    for product in products:
+        if product in target_products:
+            print(f' [MATCH] {product}')
+            matched = True
+        else:
+            print(f' [SKIP] {product}')
+    return matched
+
+
+def detect_applicable_systems(info):
+    if not info or 'body' not in info:
+        return 'PRIMEQUEST, PRIMERGY'
+    summary = (info['body'] or {}).get('summary', '')
+    return 'PRIMERGY' if '10.0' in summary else 'PRIMEQUEST, PRIMERGY'
+
+
+def generate_rhsa_report(errata_id, info, pkgs, report_num, contacts, tpl_text, target_date,
+                         product_table_rows_override=None, footer_block_override=None,
+                         pkg_name_override=None, errata_display_id=None):
+    if not info or 'body' not in info:
+        return 'Error: Invalid errata information'
+
+    body = info['body']
+    pkg_name = pkg_name_override or extract_package_name(info)
+    summary = body.get('summary', '')
+    description = body.get('description', '')
+    products = body.get('affectedProducts') or []
+    applicable_systems = detect_applicable_systems(info)
+
+    rhel_ver_str = extract_rhel_version(pkgs)
+    if rhel_ver_str != 'unknown':
+        rhel_major = rhel_ver_str.split('.')[0]
+    else:
+        m = re.search(r'Red Hat Enterprise Linux (\d+)', summary)
+        rhel_major = m.group(1) if m else '?'
+
+    full_ver = None
+    vm = re.search(r'Red Hat Enterprise Linux (\d+\.\d+)', summary)
+    if vm:
+        full_ver = vm.group(1)
+    else:
+        for pkg in pkgs or []:
+            for cs in pkg.get('contentSets', []) or []:
+                m_cs = re.search(r'rhel-(\d+\.\d+)-for-', cs)
+                if m_cs:
+                    full_ver = m_cs.group(1)
+                    break
+            if full_ver:
+                break
+    if not full_ver:
+        full_ver = rhel_major
+
+    has_std = 'Red Hat Enterprise Linux for x86_64' in products
+    has_eus = 'Red Hat Enterprise Linux for x86_64 - Extended Update Support' in products
+    possible_aus = {
+        'Red Hat Enterprise Linux Server - AUS',
+        'Red Hat Enterprise Linux Server - Advanced mission critical Update Support',
+    }
+    has_aus = any(p in possible_aus or 'Advanced mission critical' in p or (p.endswith('- AUS') and 'Server' in p) for p in products)
+    has_els = any('Extended Life Cycle Support' in p for p in products)
+    if not has_els and ('ExtendedLifecycleSupport' in summary or 'Extended Lifecycle Support' in summary or 'Extended Life Cycle Support' in summary):
+        has_els = True
+
+    table_lines = []
+    footnotes = []
+    note_counter = 1
+    base_os_name = f'Red Hat Enterprise Linux {rhel_major} (for Intel64)'
+
+    if has_std:
+        table_lines.append(f'{base_os_name}, v.{rhel_major}, RHEL{rhel_major}(Intel64), {pkg_name}, {errata_id}')
+    if has_eus:
+        mark = f'[※{note_counter}]'
+        table_lines.append(f'{base_os_name}, v.{full_ver}, RHEL{rhel_major}(Intel64){mark}, {pkg_name}, {errata_id}')
+        footnotes.append(f'{mark} RHEL Extended Update Support({full_ver}) 環境')
+        note_counter += 1
+    if has_aus:
+        mark = f'[※{note_counter}]'
+        table_lines.append(f'{base_os_name}, v.{full_ver}, RHEL{rhel_major}(Intel64){mark}, {pkg_name}, {errata_id}')
+        footnotes.append(f'{mark} RHEL Advanced mission critical Update Support({full_ver}) 環境')
+        note_counter += 1
+    if has_els:
+        mark = f'[※{note_counter}]'
+        table_lines.append(f'{base_os_name}, v.{rhel_major}, RHEL{rhel_major}(Intel64){mark}, {pkg_name}, {errata_id}')
+        footnotes.append(f'{mark} RHEL Extended Life Cycle Support {rhel_major} 環境')
+        note_counter += 1
+    if not table_lines:
+        table_lines.append(f'{base_os_name}, v.{rhel_major}, RHEL{rhel_major}(Intel64), {pkg_name}, {errata_id}')
+
+    product_table_rows = product_table_rows_override if product_table_rows_override is not None else '\n'.join(table_lines)
+    footer_block = footer_block_override if footer_block_override is not None else '\n'.join(footnotes)
+
+    data = {
+        'REPORT_NUMBER': report_num,
+        'DEPARTMENT': contacts.get('department', 'DEPARTMENT') if isinstance(contacts, dict) else 'DEPARTMENT',
+        'APPROVER_NAME': get_contact_value(contacts, 'APPROVER_NAME', 'approver', 'name'),
+        'APPROVER_TITLE': get_contact_value(contacts, 'APPROVER_TITLE', 'approver', 'title'),
+        'APPROVER_PHONE': get_contact_value(contacts, 'APPROVER_PHONE', 'approver', 'phone'),
+        'APPROVER_EMAIL': get_contact_value(contacts, 'APPROVER_EMAIL', 'approver', 'email'),
+        'ISSUER_NAME': get_contact_value(contacts, 'ISSUER_NAME', 'issuer', 'name'),
+        'ISSUER_PHONE': get_contact_value(contacts, 'ISSUER_PHONE', 'issuer', 'phone'),
+        'ISSUER_EMAIL': get_contact_value(contacts, 'ISSUER_EMAIL', 'issuer', 'email'),
+        'PACKAGE_NAME': pkg_name,
+        'ERRATA_ID': errata_display_id or errata_id,
+        'SUMMARY': format_report_text(summary, width=80, indent=3),
+        'DESCRIPTION': format_report_text(description, width=80, indent=3),
+        'PRODUCT_TABLE_ROWS': product_table_rows,
+        'FOOTER_BLOCK': footer_block,
+        'APPLICABLE_SYSTEMS': applicable_systems,
+        'CVES_SECTION': '',
+        'DATE': target_date.strftime('%Y.%m.%d'),
+        'DATE_JP': target_date.strftime('%Y年%m月%d日'),
+    }
+    return Template(tpl_text).safe_substitute(data) if tpl_text else product_table_rows
+
+
+def content_set_matches_arch(content_set, arch):
+    if not content_set:
+        return False
+    if re.search(r'rhel-[67]', content_set):
+        return bool(re.search(r'^rhel-[67]-server-', content_set))
+    if arch == 'aarch64':
+        return bool(re.search(r'^rhel-[891]0?-for-aarch64-', content_set))
+    return bool(re.search(r'^rhel-[891]0?-for-x86_64-[ab]', content_set))
+
+
+def select_rhsa_packages(pkgs, arch='x86_64', src_only=False):
+    selected = []
+    seen = set()
+    for pkg in pkgs or []:
+        checksum = pkg.get('checksum')
+        filename = pkg.get('filename') or ''
+        pkg_arch = (pkg.get('arch') or '').lower()
+        if not checksum or not filename:
+            continue
+        if src_only:
+            if pkg_arch != 'src':
+                continue
+        else:
+            if pkg_arch and pkg_arch != arch.lower():
+                continue
+            content_sets = pkg.get('contentSets') or []
+            if content_sets and not any(content_set_matches_arch(cs, arch) for cs in content_sets):
+                continue
+        if checksum in seen:
+            continue
+        seen.add(checksum)
+        selected.append(pkg)
+    selected.sort(key=lambda x: x.get('filename') or '')
+    return selected
+
+
+def write_tree_report(root_dir, out_path):
+    root = Path(root_dir)
+    lines = [f'{root.name}/']
+    def walk(current, prefix=''):
+        entries = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        for idx, entry in enumerate(entries):
+            branch = '└── ' if idx == len(entries) - 1 else '├── '
+            lines.append(f"{prefix}{branch}{entry.name}{'/' if entry.is_dir() else ''}")
+            if entry.is_dir():
+                walk(entry, prefix + ('    ' if idx == len(entries) - 1 else '│   '))
+    if root.exists():
+        walk(root)
+    Path(out_path).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+
+def write_hash_reports(root_dir, md5_path, sha256_path):
+    import hashlib as _hashlib
+    root = Path(root_dir)
+    md5_lines = []
+    sha_lines = []
+    for rpm in sorted(root.rglob('*.rpm')):
+        rel = rpm.relative_to(root)
+        md5h = _hashlib.md5()
+        sha = _hashlib.sha256()
+        with open(rpm, 'rb') as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                md5h.update(chunk)
+                sha.update(chunk)
+        md5_lines.append(f'{md5h.hexdigest()}  {rel}')
+        sha_lines.append(f'{sha.hexdigest()}  {rel}')
+    Path(md5_path).write_text('\n'.join(md5_lines) + ('\n' if md5_lines else ''), encoding='utf-8')
+    Path(sha256_path).write_text('\n'.join(sha_lines) + ('\n' if sha_lines else ''), encoding='utf-8')
+
+
+def pick_report_map_path(path_from_arg):
+    if path_from_arg and Path(path_from_arg).exists():
+        return path_from_arg
+    if path_from_arg == 'advisory_list.txt' and Path('report-advisory.txt').exists():
+        return 'report-advisory.txt'
+    return path_from_arg
+
+
+def resolve_output_style(is_cve_mode, encoding_mode='auto', newline_mode='auto'):
+    if encoding_mode == 'auto':
+        encoding = 'utf-8' if is_cve_mode else 'cp932'
+    elif encoding_mode == 'sjis':
+        encoding = 'cp932'
+    else:
+        encoding = 'utf-8'
+
+    if newline_mode == 'auto':
+        newline = None if is_cve_mode else '\r\n'
+    elif newline_mode == 'crlf':
+        newline = '\r\n'
+    else:
+        newline = None
+    return encoding, newline
+
+
+def write_report_file(out_path, text, is_cve_mode, encoding_mode='auto', newline_mode='auto'):
+    encoding, newline = resolve_output_style(is_cve_mode, encoding_mode, newline_mode)
+    with open(out_path, 'w', encoding=encoding, newline=newline) as f:
+        f.write(text)
+    return encoding, ('CRLF' if newline == '\r\n' else 'LF/default')
+
+
+def handle_rhsa_mode(args, target_date):
+    offline_token = os.getenv('OFFLINE_TOKEN')
+    if not offline_token:
+        raise RuntimeError('OFFLINE_TOKEN environment variable is not set.')
+
+    arch = 'aarch64' if args.a else 'x86_64'
+    errata_id = args.RHSA.strip().upper()
+    access_token = get_access_token(offline_token)
+
+    print(f'Fetching errata information for {errata_id}...')
+    info = fetch_errata_info(access_token, errata_id)
+    write_to_json(f'{errata_id}-info.json', info)
+    print(f'Errata information saved to {errata_id}-info.json')
+
+    all_pkgs = []
+    offset = 0
+    while True:
+        page = fetch_errata_packages(access_token, errata_id, offset)
+        body = page.get('body') or []
+        all_pkgs.extend(body)
+        pagination = page.get('pagination') or {}
+        count = pagination.get('count', 0)
+        if not body or count == 0:
+            break
+        if count < 50:
+            break
+        offset += count
+    write_to_json(f'{errata_id}.json', all_pkgs)
+    print(f'Errata package list saved to {errata_id}.json')
+
+    affected_ok = check_affected_products(info)
+    contacts = load_contacts(args.contacts or 'contacts.default.json')
+    tpl_text = load_template(args.template or 'report_template.default.txt')
+    report_map_path = pick_report_map_path(args.advisory_list)
+    report_name = resolve_report_number(errata_id, report_map_path)
+
+    if args.force_report or affected_ok:
+        if args.force_report and not affected_ok:
+            print('Notice: --force-report enabled. Skipping product check for report generation.')
+        report = generate_rhsa_report(errata_id, info, all_pkgs, report_name, contacts, tpl_text, target_date)
+        Path(args.outdir).mkdir(parents=True, exist_ok=True)
+        out = Path(args.outdir) / f'{report_name}.txt'
+        used_enc, used_nl = write_report_file(out, report, is_cve_mode=False, encoding_mode=args.encoding, newline_mode=args.newline)
+        issue_dt = extract_issue_datetime(info)
+        ok_ts = set_file_timestamp_to_issue(str(out), issue_dt)
+        if ok_ts:
+            print(f'Adjusted report timestamp to issued date: {issue_dt.isoformat()}')
+        else:
+            print('Note: Failed to adjust report timestamp or issued date not available.')
+        print(f'Security report generated: {out} with date {target_date.strftime("%Y-%m-%d")} [{used_enc}, {used_nl}]')
+    else:
+        print('\n[INFO] Report generation skipped.')
+        print('Reason: Affected products did not match the specific target list.')
+        print('Tip: Use --force-report to bypass this check.\n')
+
+    selected = select_rhsa_packages(all_pkgs, arch=arch, src_only=args.s)
+    if args.g:
+        before = len(selected)
+        selected = [pkg for pkg in selected if 'debug' not in (pkg.get('filename') or '').lower()]
+        print(f'Filtered debug-containing filenames with -g: {before} -> {len(selected)}')
+
+    should_download = False
+    if args.n:
+        should_download = False
+    else:
+        if args.force_download:
+            print('Notice: --force-download enabled. Skipping product check for download.')
+            should_download = True
+        elif affected_ok:
+            should_download = True
+        else:
+            print('\n[INFO] RPM Download skipped.')
+            print('Reason: Affected products did not match the specific target list.')
+            print('Tip: Use --force-download to bypass this check.\n')
+
+    if not selected:
+        print('No matching RPM packages were found for the requested RHSA/architecture/options.')
+        return
+
+    base_dir = Path(args.outdir) / errata_id.replace(':', '-')
+    target_subdir = 'SRPM' if args.s else arch
+    target_dir = base_dir / target_subdir
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    downloaded = []
+    critical_files = []
+    failures = []
+
+    for idx, pkg in enumerate(selected, 1):
+        filename = pkg.get('filename') or ''
+        checksum = pkg.get('checksum') or ''
+        dest = target_dir / filename
+        critical = is_critical_kernel_file(filename)
+        if critical:
+            critical_files.append((dest, checksum))
+        if args.n:
+            print(f'{idx}:{filename} [planned]')
+            continue
+        if not should_download:
+            break
+        print(f'{idx}:{filename}' + (' [Critical File]' if critical else ''))
+        # refresh access token per file to stay close to cve14 behavior
+        token = get_access_token(offline_token)
+        ok = download_file_with_retry(token, checksum, str(dest), max_retries=3 if critical else 2)
+        if ok:
+            downloaded.append(dest)
+        else:
+            failures.append(filename)
+
+    if should_download and critical_files:
+        print('\n=== Critical Files Final Verification ===')
+        all_ok = True
+        for dest, checksum in critical_files:
+            if verify_file_checksum(dest, checksum):
+                print(f'✓ {dest.name} - OK')
+            else:
+                print(f'✗ {dest.name} - NG')
+                all_ok = False
+                print(' Final re-download attempt...')
+                token = get_access_token(offline_token)
+                if download_file_with_retry(token, checksum, str(dest), max_retries=2) and verify_file_checksum(dest, checksum):
+                    print(' ✓ Re-download successful')
+                else:
+                    print(' ✗ Re-download failed')
+        print('\nAll critical files downloaded successfully.' if all_ok else '\n⚠️ Some critical files have download issues.')
+
+    nid = errata_id.replace(':', '-')
+    write_tree_report(base_dir, base_dir / f'{nid}-tree.txt')
+    if should_download:
+        write_hash_reports(base_dir, base_dir / f'{nid}-md5sum.txt', base_dir / f'{nid}-sha256sum.txt')
+
+    print(f'Output directory: {base_dir}')
+    print(f'Matched packages: {len(selected)}')
+    if args.n:
+        print(f'Planned packages: {len(selected)}')
+    elif should_download:
+        print(f'Downloaded packages: {len(downloaded)}')
+    if failures:
+        print('Failed downloads:')
+        for name in failures:
+            print(f'  - {name}')
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Red Hat CVE VEX security report generator")
-    ap.add_argument("-a", action="store_true", help="arch is aarch64(default:x86_64)")
-    ap.add_argument("-c", "--contacts", type=str, default=None, help="contacts JSON file")
-    ap.add_argument("-t", "--template", type=str, default=None, help="template file")
-    ap.add_argument("-o", "--outdir", type=str, default=".", help="output directory")
-    ap.add_argument("-d", "--date", type=str, default=None, help="report date YYYY-MM-DD")
-    ap.add_argument("--advisory-list", type=str, default="advisory_list.txt", help="report number mapping file")
-    ap.add_argument("--cve-json", type=str, default=None, help="use local Red Hat CSAF VEX JSON instead of downloading it")
-    ap.add_argument("RHSA", type=str, help="CVE identifier, e.g. CVE-2026-4786")
+    ap = argparse.ArgumentParser(description='Red Hat CVE VEX security report generator + RHSA downloader/report generator')
+    ap.add_argument('-a', action='store_true', help='arch is aarch64(default:x86_64)')
+    ap.add_argument('-n', action='store_true', help='No download. List RHSA download targets only')
+    ap.add_argument('-g', action='store_true', help='Skip files whose filename contains debug')
+    ap.add_argument('-s', action='store_true', help='src.rpm only (RHSA mode)')
+    ap.add_argument('-c', '--contacts', type=str, default=None, help='contacts JSON file')
+    ap.add_argument('-t', '--template', type=str, default=None, help='template file')
+    ap.add_argument('-o', '--outdir', type=str, default='.', help='output directory')
+    ap.add_argument('-d', '--date', type=str, default=None, help='report date YYYY-MM-DD')
+    ap.add_argument('--advisory-list', type=str, default='advisory_list.txt', help='report number mapping file')
+    ap.add_argument('--force-report', action='store_true', help='Force RHSA report generation regardless of affected products')
+    ap.add_argument('--force-download', action='store_true', help='Force RHSA RPM download regardless of affected products')
+    ap.add_argument('--cve-json', type=str, default=None, help='use local Red Hat CSAF VEX JSON instead of downloading it')
+    ap.add_argument('--encoding', choices=['auto', 'sjis', 'utf8'], default='auto', help='report output encoding: auto (RHSA=SJIS, CVE=UTF-8), sjis, utf8')
+    ap.add_argument('--newline', choices=['auto', 'crlf', 'lf'], default='auto', help='report output newline: auto (RHSA=CRLF, CVE=LF/default), crlf, lf')
+    ap.add_argument('RHSA', type=str, help='CVE identifier or RHSA identifier (e.g. CVE-2026-4786 or RHSA-2026:25217)')
     args = ap.parse_args()
 
-    target_date = datetime.strptime(args.date, "%Y-%m-%d") if args.date else datetime.now()
+    if args.date:
+        try:
+            target_date = datetime.strptime(args.date, '%Y-%m-%d')
+        except ValueError:
+            print(f"Error: Invalid date format '{args.date}'. Please use YYYY-MM-DD.")
+            sys.exit(1)
+    else:
+        target_date = datetime.now()
+
+    if is_rhsa_id(args.RHSA):
+        handle_rhsa_mode(args, target_date)
+        return
+
     if not is_cve_id(args.RHSA):
-        print("Error: This script handles CVE identifiers. Use a CVE such as CVE-2026-4786.")
+        print('Error: This script handles CVE identifiers for report generation and RHSA identifiers for report/download mode.')
         sys.exit(2)
 
     cve_id = normalize_cve_id(args.RHSA)
-    contacts = load_contacts(args.contacts or "contacts.default.json")
-    tpl_text = load_template(args.template or "report_template.default-cve.txt")
-    arch = "aarch64" if args.a else "x86_64"
+    contacts = load_contacts(args.contacts or 'contacts.default.json')
+    tpl_text = load_template(args.template or 'report_template.default-cve.txt')
+    arch = 'aarch64' if args.a else 'x86_64'
 
-    print(f"Fetching Red Hat CSAF VEX information for {cve_id}...")
+    print(f'Fetching Red Hat CSAF VEX information for {cve_id}...')
     if args.cve_json:
         vex = load_json_file(args.cve_json)
-        print(f"CVE VEX information loaded from {args.cve_json}")
+        print(f'CVE VEX information loaded from {args.cve_json}')
     else:
         vex = fetch_cve_vex(cve_id)
-        write_to_json(f"{cve_id.lower()}-vex.json", vex)
-        print(f"CVE VEX information saved to {cve_id.lower()}-vex.json")
+        write_to_json(f'{cve_id.lower()}-vex.json', vex)
+        print(f'CVE VEX information saved to {cve_id.lower()}-vex.json')
 
     patch_records = collect_cve_patch_records(vex, arch=arch)
     if not patch_records:
-        print("Warning: No displayable RHSA remediations were found for the requested architecture/rules.")
+        print('Warning: No displayable RHSA remediations were found for the requested architecture/rules.')
     else:
-        print("\n=== CVE displayable product IDs and RHSA URLs ===")
+        print('\n=== CVE displayable product IDs and RHSA URLs ===')
         for r in patch_records:
-            print(f"\"{r['product_id']}\",")
-            print(f"\"url\": \"{r['url']}\"\n")
-        print("=== 3-2. Patch table preview ===")
-        print("3-2. 該当製品・対策Patch")
-        print("(18)製品名     ,(19)VL  ,(20)対象OS     ,(21)パッケージ名    ,(22)Patch ID.")
-        print("+--------------------------------------------------------------------------")
+            print(f'"{r["product_id"]}",')
+            print(f'"url": "{r["url"]}"\n')
+        print('=== 3-2. Patch table preview ===')
+        print('3-2. 該当製品・対策Patch')
+        print('(18)製品名     ,(19)VL  ,(20)対象OS     ,(21)パッケージ名    ,(22)Patch ID.')
+        print('+--------------------------------------------------------------------------')
         print(build_cve_patch_table(patch_records))
-        print("+--------------------------------------------------------------------------\n")
+        print('+--------------------------------------------------------------------------\n')
 
     info = build_cve_report_info(cve_id, vex)
     package_name = extract_cve_package_name(vex)
-    report_name = resolve_report_number(cve_id, args.advisory_list)
+    report_name = resolve_report_number(cve_id, pick_report_map_path(args.advisory_list))
     report = generate_security_report(
         cve_id, info, report_name, contacts, tpl_text, target_date,
         product_table_rows_override=build_cve_patch_table(patch_records),
@@ -503,18 +1108,16 @@ def main():
     )
 
     Path(args.outdir).mkdir(parents=True, exist_ok=True)
-    out = Path(args.outdir) / f"{report_name}.txt"
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(report)
-
+    out = Path(args.outdir) / f'{report_name}.txt'
+    used_enc, used_nl = write_report_file(out, report, is_cve_mode=True, encoding_mode=args.encoding, newline_mode=args.newline)
     issue_dt = extract_issue_datetime(info)
     ok_ts = set_file_timestamp_to_issue(str(out), issue_dt)
     if ok_ts:
-        print(f"Adjusted report timestamp to issued date: {issue_dt.isoformat()}")
+        print(f'Adjusted report timestamp to issued date: {issue_dt.isoformat()}')
     else:
-        print("Note: Failed to adjust report timestamp or issued date not available.")
-    print(f"Security report generated: {out} with date {target_date.strftime('%Y-%m-%d')}")
+        print('Note: Failed to adjust report timestamp or issued date not available.')
+    print(f'Security report generated: {out} with date {target_date.strftime("%Y-%m-%d")} [{used_enc}, {used_nl}]')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
