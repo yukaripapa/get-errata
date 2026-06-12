@@ -3,7 +3,6 @@
 # get-errata-cve21.py
 # CVE-based Red Hat CSAF VEX security report generator
 # v21.0: supports phone_mobile in contacts and includes v20/v19 CVE fallback logic.
-
 import argparse
 import json
 import os
@@ -13,24 +12,16 @@ import textwrap
 from pathlib import Path
 from string import Template
 from datetime import datetime, timezone
-
 import requests
 import hashlib
-
-VERSION = "24.0"
+VERSION = "25.1"
 SUPPORTED_RHEL_STREAM_PREFIXES = ("BASEOS-", "APPSTREAM-")
-
-
 def load_json_file(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
 def write_to_json(filename, data):
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
-
-
 def load_template(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -38,30 +29,23 @@ def load_template(path):
     except Exception as e:
         print(f"Warning: template load failed from {path}: {e}")
         return None
-
-
 def load_contacts(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
-
-
 def get_contact_value(contacts, placeholder, section=None, field=None):
     """Return contact value for Template placeholders.
-
     Supported contacts.json styles:
       - "APPROVER_NAME": "..."
       - "approver_name": "..."
       - "approver": {"name": "...", "phone_mobile": "..."}
       - "approverName": "..."
-
     For phone fields, also accepts phone_mobile, mobile, tel, telephone.
     """
     if not isinstance(contacts, dict):
         return ""
-
     candidates = [placeholder, placeholder.lower()]
     if section and field:
         field_aliases = [field]
@@ -70,12 +54,10 @@ def get_contact_value(contacts, placeholder, section=None, field=None):
         candidates.extend([f"{section}_{alias}" for alias in field_aliases])
         candidates.extend([f"{section}_{alias}".upper() for alias in field_aliases])
         candidates.extend([f"{section}{alias.capitalize()}" for alias in field_aliases])
-
     for key in candidates:
         value = contacts.get(key)
         if value is not None:
             return str(value)
-
     if section and field:
         obj = contacts.get(section) or contacts.get(section.upper())
         if isinstance(obj, dict):
@@ -87,8 +69,6 @@ def get_contact_value(contacts, placeholder, section=None, field=None):
                 if value is not None:
                     return str(value)
     return ""
-
-
 def format_report_text(text, width=80, indent=3):
     if not text:
         return ""
@@ -100,16 +80,10 @@ def format_report_text(text, width=80, indent=3):
         else:
             out.append("")
     return "\n".join(out)
-
-
 def is_cve_id(value):
     return bool(re.fullmatch(r"CVE-\d{4}-\d{4,}", (value or "").strip(), re.IGNORECASE))
-
-
 def normalize_cve_id(value):
     return (value or "").strip().upper()
-
-
 def fetch_cve_vex(cve_id):
     cve_id = normalize_cve_id(cve_id)
     m = re.fullmatch(r"CVE-(\d{4})-\d{4,}", cve_id)
@@ -119,20 +93,14 @@ def fetch_cve_vex(cve_id):
     r = requests.get(url, headers={"accept": "application/json"}, timeout=30)
     r.raise_for_status()
     return r.json()
-
-
 def first_vulnerability(vex):
     vulns = vex.get("vulnerabilities") or []
     return vulns[0] if vulns else {}
-
-
 def extract_note_text(notes, category):
     for n in notes or []:
         if n.get("category") == category and n.get("text"):
             return n.get("text")
     return ""
-
-
 def extract_package_name_from_title(text):
     if not text:
         return None
@@ -150,8 +118,6 @@ def extract_package_name_from_title(text):
         s = rest.strip()
     token = re.split(r"[:\s,]+", s, maxsplit=1)[0].strip()
     return token.lower() if token else None
-
-
 def package_matches_target(pkg, target_pkg):
     if not target_pkg:
         return True
@@ -161,8 +127,6 @@ def package_matches_target(pkg, target_pkg):
         return True
     # Allow versioned stream names: bind9, bind9.16, python3.11, etc.
     return bool(re.fullmatch(re.escape(target) + r"[0-9.]+", pkg))
-
-
 def extract_package_name_from_product_id(product_id):
     if not product_id or ":" not in product_id:
         return None
@@ -171,13 +135,9 @@ def extract_package_name_from_product_id(product_id):
     if m:
         return m.group("pkg")
     return component.split("-", 1)[0] if component else None
-
-
 def display_package_name_from_product_id(product_id, fallback_pkg=None):
     pkg = extract_package_name_from_product_id(product_id) or fallback_pkg or "unknown"
     return str(pkg).lower()
-
-
 def is_excluded_cve_stream(stream):
     stream_upper = (stream or "").upper()
     # E4S is not excluded; AUS and E4S are both shown as v.<minor>aus.
@@ -185,20 +145,15 @@ def is_excluded_cve_stream(stream):
         re.search(r"(^|[.\-])TUS($|[.\-])", stream_upper) or
         re.search(r"(^|[.\-])EXTENSION($|[.\-])", stream_upper)
     )
-
-
 def is_supported_rhel_stream(stream):
     su = (stream or "").upper()
     return su == "7SERVER-ELS" or su.startswith(SUPPORTED_RHEL_STREAM_PREFIXES)
-
-
 def is_target_cve_product_id(product_id, target_pkg=None, arch="x86_64", mode="arch_strict"):
     if not product_id or ":" not in product_id:
         return False
     stream, component = product_id.split(":", 1)
     if is_excluded_cve_stream(stream) or not is_supported_rhel_stream(stream):
         return False
-
     if mode in ("src_strict", "src_relaxed"):
         m = re.fullmatch(r"(?P<pkg>.+?)-\d+:.+\.src", component)
     else:
@@ -208,8 +163,6 @@ def is_target_cve_product_id(product_id, target_pkg=None, arch="x86_64", mode="a
     if mode == "src_relaxed":
         return True
     return package_matches_target(m.group("pkg"), target_pkg)
-
-
 def extract_cve_package_name(vex):
     doc = vex.get("document") or {}
     vuln = first_vulnerability(vex)
@@ -223,13 +176,9 @@ def extract_cve_package_name(vex):
         if pkg:
             return pkg
     return "unknown"
-
-
 def extract_rhsa_id_from_url(url):
     m = re.search(r"RHSA-\d{4}:\d+", url or "")
     return m.group(0) if m else (url or "")
-
-
 def parse_stream_version(stream):
     stream_upper = stream.upper()
     if stream_upper == "7SERVER-ELS":
@@ -246,8 +195,6 @@ def parse_stream_version(stream):
     else:
         vl = f"v.{minor_ver}"
     return major_ver, vl
-
-
 def parse_cve_fixed_product_id(product_id, url, target_pkg="unknown", arch="x86_64", mode="arch_strict"):
     if "RHSA-" not in (url or ""):
         return None
@@ -267,8 +214,6 @@ def parse_cve_fixed_product_id(product_id, url, target_pkg="unknown", arch="x86_
         "patch_id": extract_rhsa_id_from_url(url),
         "mode": mode,
     }
-
-
 def _collect_cve_patch_records_once(vex, arch="x86_64", mode="arch_strict"):
     vuln = first_vulnerability(vex)
     target_pkg = extract_cve_package_name(vex)
@@ -288,11 +233,8 @@ def _collect_cve_patch_records_once(vex, arch="x86_64", mode="arch_strict"):
             seen.add(key)
             records.append(rec)
     return records
-
-
 def collect_cve_patch_records(vex, arch="x86_64"):
     """Collect fixed RHSA patch rows.
-
     Priority:
       1. arch_strict: .x86_64 and title package match
       2. src_strict: .src and title package match
@@ -301,25 +243,19 @@ def collect_cve_patch_records(vex, arch="x86_64"):
     records = _collect_cve_patch_records_once(vex, arch=arch, mode="arch_strict")
     if records:
         return records
-
     src_records = _collect_cve_patch_records_once(vex, arch=arch, mode="src_strict")
     if src_records:
         print("Info: No architecture-specific remediations were found; using matching .src product_ids as fallback.")
         return src_records
-
     relaxed_records = _collect_cve_patch_records_once(vex, arch=arch, mode="src_relaxed")
     if relaxed_records:
         print("Info: No package-matched remediations were found; using .src product_ids with relaxed package matching as fallback.")
     return relaxed_records
-
-
 def build_cve_patch_table(records):
     return "\n".join(
         f"{r['product_name']}, {r['vl']} , {r['os']} , {r['package']}, {r['patch_id']}"
         for r in records
     )
-
-
 def build_cve_report_info(cve_id, vex):
     doc = vex.get("document") or {}
     tracking = doc.get("tracking") or {}
@@ -330,14 +266,12 @@ def build_cve_report_info(cve_id, vex):
     summary = title or extract_note_text(notes, "summary") or doc.get("title") or cve_id
     description = extract_note_text(notes, "description") or summary
     package_name = extract_cve_package_name(vex)
-
     refs = []
     for ref in vuln.get("references") or []:
         if ref.get("url"):
             refs.append({"href": ref.get("url"), "id": ref.get("summary") or ref.get("url"), "title": ref.get("summary") or ref.get("url"), "type": ref.get("category") or "external"})
     if not any(cve_id.lower() in (r.get("href", "").lower()) for r in refs):
         refs.append({"href": f"https://access.redhat.com/security/cve/{cve_id}", "id": cve_id, "title": cve_id, "type": "cve"})
-
     body = {
         "id": cve_id,
         "cves": cve_id,
@@ -355,8 +289,6 @@ def build_cve_report_info(cve_id, vex):
         "solution": "Refer to the related Red Hat Security Advisory listed in the patch table.",
     }
     return {"body": body}
-
-
 def load_report_map(path):
     report_map = {}
     if os.path.exists(path):
@@ -369,8 +301,6 @@ def load_report_map(path):
         except Exception as e:
             print(f"Warning: Failed to load {path}: {e}")
     return report_map
-
-
 def guess_report_number(target):
     m = re.search(r"RHSA-20(\d{2}):(\d+)", target)
     if m:
@@ -379,8 +309,6 @@ def guess_report_number(target):
     if m:
         return f"L{m.group(1)}-{m.group(2)}-0T"
     return f"LYY-{target}-00"
-
-
 def resolve_report_number(target, advisory_list):
     report_map = load_report_map(advisory_list)
     if target in report_map:
@@ -389,8 +317,6 @@ def resolve_report_number(target, advisory_list):
     report_name = guess_report_number(target)
     print(f"Report number generated: {report_name}")
     return report_name
-
-
 def extract_issue_datetime(info):
     body = (info or {}).get("body", {})
     for key in ["issued", "lastUpdated"]:
@@ -402,8 +328,6 @@ def extract_issue_datetime(info):
         except Exception:
             pass
     return None
-
-
 def set_file_timestamp_to_issue(path, issue_dt):
     if not issue_dt:
         return False
@@ -415,8 +339,6 @@ def set_file_timestamp_to_issue(path, issue_dt):
         return True
     except Exception:
         return False
-
-
 def generate_security_report(errata_id, info, report_num, contacts, tpl_text, target_date,
                              product_table_rows_override=None, pkg_name_override=None,
                              errata_display_id=None):
@@ -441,17 +363,13 @@ def generate_security_report(errata_id, info, report_num, contacts, tpl_text, ta
         "FOOTER_BLOCK": "",
         "APPLICABLE_SYSTEMS": "PRIMEQUEST, PRIMERGY",
         "CVES_SECTION": f"  - {errata_display_id or errata_id}\n          https://access.redhat.com/security/cve/{str(errata_display_id or errata_id).lower()}",
+        "CVES_LINKS": build_cves_links(info),
         "DATE": target_date.strftime("%Y.%m.%d"),
         "DATE_JP": target_date.strftime("%Y年%m月%d日"),
     }
     return Template(tpl_text).safe_substitute(data) if tpl_text else (product_table_rows_override or "")
-
-
-
 def is_rhsa_id(value):
     return bool(re.fullmatch(r"RHSA-\d{4}:\d+", (value or "").strip(), re.IGNORECASE))
-
-
 def json_value(data, key):
     try:
         if isinstance(data, str):
@@ -461,8 +379,6 @@ def json_value(data, key):
     except Exception:
         pass
     return None
-
-
 def get_access_token(offline_token):
     url = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
     payload = {
@@ -476,39 +392,29 @@ def get_access_token(offline_token):
     if not token:
         raise RuntimeError("Failed to retrieve access token from Red Hat SSO response.")
     return token
-
-
 def fetch_errata_info(access_token, errata_id):
     url = f"https://api.access.redhat.com/management/v1/errata/{errata_id}"
     headers = {"Authorization": f"Bearer {access_token}", "accept": "application/json"}
     r = requests.get(url, headers=headers, timeout=60)
     r.raise_for_status()
     return r.json()
-
-
 def fetch_errata_packages(access_token, errata_id, offset):
     url = f"https://api.access.redhat.com/management/v1/errata/{errata_id}/packages/?limit=50&offset={offset}"
     headers = {"Authorization": f"Bearer {access_token}", "accept": "application/json"}
     r = requests.get(url, headers=headers, timeout=60)
     r.raise_for_status()
     return r.json()
-
-
 def calculate_sha256(filepath):
     h = hashlib.sha256()
     with open(filepath, 'rb') as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b''):
             h.update(chunk)
     return h.hexdigest()
-
-
 def verify_file_checksum(filepath, expected):
     try:
         return Path(filepath).exists() and calculate_sha256(filepath) == expected
     except Exception:
         return False
-
-
 def is_critical_kernel_file(filename):
     critical_patterns = [
         r'^kernel-modules-core-.*\.rpm$',
@@ -521,8 +427,6 @@ def is_critical_kernel_file(filename):
         r'^kernel-doc', r'^kernel-abi', r'^kernel-modules-extra', r'^kernel-modules-internal'
     ]
     return (not any(re.match(p, filename) for p in exclude_patterns)) and any(re.match(p, filename) for p in critical_patterns)
-
-
 def _find_first_href(data):
     if isinstance(data, dict):
         for key in ('href', 'url', 'downloadUrl'):
@@ -539,42 +443,31 @@ def _find_first_href(data):
             if hit:
                 return hit
     return None
-
-
 def _extract_href_from_text(text):
     if not text:
         return None
     m = re.search(r'https?://[^\s"\']+', text)
     return m.group(0) if m else None
-
-
 def _is_direct_download_response(resp):
     ctype = (resp.headers.get('content-type') or '').lower()
     dispo = (resp.headers.get('content-disposition') or '').lower()
     return ('application/x-rpm' in ctype or 'application/octet-stream' in ctype or
             '.rpm' in dispo or '.src.rpm' in dispo)
-
-
 def _save_response_content(resp, out_path):
     with open(out_path, 'wb') as f:
         for chunk in resp.iter_content(chunk_size=1024 * 1024):
             if chunk:
                 f.write(chunk)
-
-
 def resolve_download_response(access_token, checksum):
     endpoint = f"https://api.access.redhat.com/management/v1/packages/{checksum}/download"
     headers = {"Authorization": f"Bearer {access_token}"}
     resp = requests.get(endpoint, headers=headers, timeout=60, stream=True, allow_redirects=False)
-
     if resp.status_code in (301, 302, 303, 307, 308):
         location = resp.headers.get('location')
         if location:
             return ('href', location)
-
     if _is_direct_download_response(resp):
         return ('response', resp)
-
     text_hint = None
     ctype = (resp.headers.get('content-type') or '').lower()
     if 'json' in ctype:
@@ -592,7 +485,6 @@ def resolve_download_response(access_token, checksum):
     href = _extract_href_from_text(text_hint)
     if href:
         return ('href', href)
-
     # Final fallback: try with redirects enabled, because some environments may stream the RPM directly.
     resp2 = requests.get(endpoint, headers=headers, timeout=300, stream=True, allow_redirects=True)
     if _is_direct_download_response(resp2):
@@ -611,8 +503,6 @@ def resolve_download_response(access_token, checksum):
     except Exception:
         pass
     raise RuntimeError(f'Unable to resolve download URL/content for checksum {checksum}; status={resp.status_code}, content-type={ctype or "unknown"}')
-
-
 def download_file_with_retry(access_token, checksum, out_path, max_retries=3):
     out_path = str(out_path)
     last_error = None
@@ -638,16 +528,12 @@ def download_file_with_retry(access_token, checksum, out_path, max_retries=3):
     if last_error:
         print(f"Download failed for {Path(out_path).name}: {last_error}")
     return False
-
-
 def extract_package_name(info):
     if not info or 'body' not in info:
         return 'unknown'
     synopsis = (info['body'] or {}).get('synopsis', '')
     m = re.search(r':\s*(\S+)\s+', synopsis)
     return m.group(1) if m else 'unknown'
-
-
 def extract_rhel_version(pkgs):
     for pkg in pkgs or []:
         for cs in pkg.get('contentSets', []) or []:
@@ -655,8 +541,6 @@ def extract_rhel_version(pkgs):
             if m:
                 return f"{m.group(1)}.{m.group(2)}" if m.group(2) else m.group(1)
     return 'unknown'
-
-
 def check_affected_products(info):
     if not info or 'body' not in info:
         return False
@@ -679,35 +563,84 @@ def check_affected_products(info):
         else:
             print(f' [SKIP] {product}')
     return matched
-
-
 def detect_applicable_systems(info):
     if not info or 'body' not in info:
         return 'PRIMEQUEST, PRIMERGY'
     summary = (info['body'] or {}).get('summary', '')
     return 'PRIMERGY' if '10.0' in summary else 'PRIMEQUEST, PRIMERGY'
+def build_cves_links(info):
+    """Build ${CVES_LINKS} content from Red Hat API/VEX-style data.
 
+    cve14 treated body['cves'] as a whitespace-separated string.  cve25
+    accidentally iterated that string character-by-character, so no CVE IDs
+    were emitted.  This function accepts all common shapes:
+      - "CVE-... CVE-..." strings
+      - lists of strings or dicts
+      - nested reference/vulnerability dictionaries
+    """
+    if not info or 'body' not in info:
+        return ''
+
+    body = info.get('body') or {}
+    cve_set = set()
+
+    def add_cves_from(value):
+        if value is None:
+            return
+        if isinstance(value, str):
+            for cve_id in re.findall(r'CVE-\d{4}-\d{4,}', value, flags=re.IGNORECASE):
+                cve_set.add(cve_id.upper())
+            return
+        if isinstance(value, dict):
+            # Prefer common key names, but also scan all nested values so that
+            # references such as href/title/summary are handled.
+            for key in ('cve', 'CVE', 'name', 'id', 'title', 'summary', 'href', 'url'):
+                if key in value:
+                    add_cves_from(value.get(key))
+            for nested in value.values():
+                if isinstance(nested, (dict, list, tuple, set)):
+                    add_cves_from(nested)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                add_cves_from(item)
+            return
+        add_cves_from(str(value))
+
+    # RHSA API commonly returns body['cves'] as a whitespace-separated string.
+    # VEX/CVE mode may have CVE IDs under references or vulnerabilities.
+    for key in ('cves', 'CVE', 'vulnerabilities', 'references'):
+        add_cves_from(body.get(key))
+
+    def cve_sort_key(cve_id):
+        m = re.fullmatch(r'CVE-(\d{4})-(\d+)', cve_id)
+        if not m:
+            return (0, 0, cve_id)
+        return (int(m.group(1)), int(m.group(2)), cve_id)
+
+    lines = []
+    for cve_id in sorted(cve_set, key=cve_sort_key):
+        lines.append(f'  - {cve_id}')
+        lines.append(f'          https://access.redhat.com/security/cve/{cve_id.lower()}')
+    return '\n'.join(lines)
 
 def generate_rhsa_report(errata_id, info, pkgs, report_num, contacts, tpl_text, target_date,
                          product_table_rows_override=None, footer_block_override=None,
                          pkg_name_override=None, errata_display_id=None):
     if not info or 'body' not in info:
         return 'Error: Invalid errata information'
-
     body = info['body']
     pkg_name = pkg_name_override or extract_package_name(info)
     summary = body.get('summary', '')
     description = body.get('description', '')
     products = body.get('affectedProducts') or []
     applicable_systems = detect_applicable_systems(info)
-
     rhel_ver_str = extract_rhel_version(pkgs)
     if rhel_ver_str != 'unknown':
         rhel_major = rhel_ver_str.split('.')[0]
     else:
         m = re.search(r'Red Hat Enterprise Linux (\d+)', summary)
         rhel_major = m.group(1) if m else '?'
-
     full_ver = None
     vm = re.search(r'Red Hat Enterprise Linux (\d+\.\d+)', summary)
     if vm:
@@ -723,7 +656,6 @@ def generate_rhsa_report(errata_id, info, pkgs, report_num, contacts, tpl_text, 
                 break
     if not full_ver:
         full_ver = rhel_major
-
     has_std = 'Red Hat Enterprise Linux for x86_64' in products
     has_eus = 'Red Hat Enterprise Linux for x86_64 - Extended Update Support' in products
     possible_aus = {
@@ -734,12 +666,10 @@ def generate_rhsa_report(errata_id, info, pkgs, report_num, contacts, tpl_text, 
     has_els = any('Extended Life Cycle Support' in p for p in products)
     if not has_els and ('ExtendedLifecycleSupport' in summary or 'Extended Lifecycle Support' in summary or 'Extended Life Cycle Support' in summary):
         has_els = True
-
     table_lines = []
     footnotes = []
     note_counter = 1
     base_os_name = f'Red Hat Enterprise Linux {rhel_major} (for Intel64)'
-
     if has_std:
         table_lines.append(f'{base_os_name}, v.{rhel_major}, RHEL{rhel_major}(Intel64), {pkg_name}, {errata_id}')
     if has_eus:
@@ -759,10 +689,10 @@ def generate_rhsa_report(errata_id, info, pkgs, report_num, contacts, tpl_text, 
         note_counter += 1
     if not table_lines:
         table_lines.append(f'{base_os_name}, v.{rhel_major}, RHEL{rhel_major}(Intel64), {pkg_name}, {errata_id}')
-
     product_table_rows = product_table_rows_override if product_table_rows_override is not None else '\n'.join(table_lines)
     footer_block = footer_block_override if footer_block_override is not None else '\n'.join(footnotes)
-
+    cve_links = build_cves_links(info)
+    formatted_cve_section = format_report_text(body.get('cve_section', ''), width=80, indent=3)
     data = {
         'REPORT_NUMBER': report_num,
         'DEPARTMENT': contacts.get('department', 'DEPARTMENT') if isinstance(contacts, dict) else 'DEPARTMENT',
@@ -780,13 +710,12 @@ def generate_rhsa_report(errata_id, info, pkgs, report_num, contacts, tpl_text, 
         'PRODUCT_TABLE_ROWS': product_table_rows,
         'FOOTER_BLOCK': footer_block,
         'APPLICABLE_SYSTEMS': applicable_systems,
-        'CVES_SECTION': '',
+        'CVES_SECTION': formatted_cve_section,
+        'CVES_LINKS': cve_links,
         'DATE': target_date.strftime('%Y.%m.%d'),
         'DATE_JP': target_date.strftime('%Y年%m月%d日'),
     }
     return Template(tpl_text).safe_substitute(data) if tpl_text else product_table_rows
-
-
 def content_set_matches_arch(content_set, arch):
     if not content_set:
         return False
@@ -795,8 +724,6 @@ def content_set_matches_arch(content_set, arch):
     if arch == 'aarch64':
         return bool(re.search(r'^rhel-[891]0?-for-aarch64-', content_set))
     return bool(re.search(r'^rhel-[891]0?-for-x86_64-[ab]', content_set))
-
-
 def select_rhsa_packages(pkgs, arch='x86_64', src_only=False):
     selected = []
     seen = set()
@@ -821,8 +748,6 @@ def select_rhsa_packages(pkgs, arch='x86_64', src_only=False):
         selected.append(pkg)
     selected.sort(key=lambda x: x.get('filename') or '')
     return selected
-
-
 def write_tree_report(root_dir, out_path):
     root = Path(root_dir)
     lines = [f'{root.name}/']
@@ -836,8 +761,6 @@ def write_tree_report(root_dir, out_path):
     if root.exists():
         walk(root)
     Path(out_path).write_text('\n'.join(lines) + '\n', encoding='utf-8')
-
-
 def write_hash_reports(root_dir, md5_path, sha256_path):
     import hashlib as _hashlib
     root = Path(root_dir)
@@ -855,16 +778,12 @@ def write_hash_reports(root_dir, md5_path, sha256_path):
         sha_lines.append(f'{sha.hexdigest()}  {rel}')
     Path(md5_path).write_text('\n'.join(md5_lines) + ('\n' if md5_lines else ''), encoding='utf-8')
     Path(sha256_path).write_text('\n'.join(sha_lines) + ('\n' if sha_lines else ''), encoding='utf-8')
-
-
 def pick_report_map_path(path_from_arg):
     if path_from_arg and Path(path_from_arg).exists():
         return path_from_arg
     if path_from_arg == 'advisory_list.txt' and Path('report-advisory.txt').exists():
         return 'report-advisory.txt'
     return path_from_arg
-
-
 def resolve_output_style(is_cve_mode, encoding_mode='auto', newline_mode='auto'):
     if encoding_mode == 'auto':
         encoding = 'utf-8' if is_cve_mode else 'cp932'
@@ -872,7 +791,6 @@ def resolve_output_style(is_cve_mode, encoding_mode='auto', newline_mode='auto')
         encoding = 'cp932'
     else:
         encoding = 'utf-8'
-
     if newline_mode == 'auto':
         newline = None if is_cve_mode else '\r\n'
     elif newline_mode == 'crlf':
@@ -880,29 +798,22 @@ def resolve_output_style(is_cve_mode, encoding_mode='auto', newline_mode='auto')
     else:
         newline = None
     return encoding, newline
-
-
 def write_report_file(out_path, text, is_cve_mode, encoding_mode='auto', newline_mode='auto'):
     encoding, newline = resolve_output_style(is_cve_mode, encoding_mode, newline_mode)
     with open(out_path, 'w', encoding=encoding, newline=newline) as f:
         f.write(text)
     return encoding, ('CRLF' if newline == '\r\n' else 'LF/default')
-
-
 def handle_rhsa_mode(args, target_date):
     offline_token = os.getenv('OFFLINE_TOKEN')
     if not offline_token:
         raise RuntimeError('OFFLINE_TOKEN environment variable is not set.')
-
     arch = 'aarch64' if args.a else 'x86_64'
     errata_id = args.RHSA.strip().upper()
     access_token = get_access_token(offline_token)
-
     print(f'Fetching errata information for {errata_id}...')
     info = fetch_errata_info(access_token, errata_id)
     write_to_json(f'{errata_id}-info.json', info)
     print(f'Errata information saved to {errata_id}-info.json')
-
     all_pkgs = []
     offset = 0
     while True:
@@ -918,13 +829,11 @@ def handle_rhsa_mode(args, target_date):
         offset += count
     write_to_json(f'{errata_id}.json', all_pkgs)
     print(f'Errata package list saved to {errata_id}.json')
-
     affected_ok = check_affected_products(info)
     contacts = load_contacts(args.contacts or 'contacts.default.json')
     tpl_text = load_template(args.template or 'report_template.default.txt')
     report_map_path = pick_report_map_path(args.advisory_list)
     report_name = resolve_report_number(errata_id, report_map_path)
-
     if args.force_report or affected_ok:
         if args.force_report and not affected_ok:
             print('Notice: --force-report enabled. Skipping product check for report generation.')
@@ -943,13 +852,11 @@ def handle_rhsa_mode(args, target_date):
         print('\n[INFO] Report generation skipped.')
         print('Reason: Affected products did not match the specific target list.')
         print('Tip: Use --force-report to bypass this check.\n')
-
     selected = select_rhsa_packages(all_pkgs, arch=arch, src_only=args.s)
     if args.g:
         before = len(selected)
         selected = [pkg for pkg in selected if 'debug' not in (pkg.get('filename') or '').lower()]
         print(f'Filtered debug-containing filenames with -g: {before} -> {len(selected)}')
-
     should_download = False
     if args.n:
         should_download = False
@@ -963,20 +870,16 @@ def handle_rhsa_mode(args, target_date):
             print('\n[INFO] RPM Download skipped.')
             print('Reason: Affected products did not match the specific target list.')
             print('Tip: Use --force-download to bypass this check.\n')
-
     if not selected:
         print('No matching RPM packages were found for the requested RHSA/architecture/options.')
         return
-
     base_dir = Path(args.outdir) / errata_id.replace(':', '-')
     target_subdir = 'SRPM' if args.s else arch
     target_dir = base_dir / target_subdir
     target_dir.mkdir(parents=True, exist_ok=True)
-
     downloaded = []
     critical_files = []
     failures = []
-
     for idx, pkg in enumerate(selected, 1):
         filename = pkg.get('filename') or ''
         checksum = pkg.get('checksum') or ''
@@ -997,7 +900,6 @@ def handle_rhsa_mode(args, target_date):
             downloaded.append(dest)
         else:
             failures.append(filename)
-
     if should_download and critical_files:
         print('\n=== Critical Files Final Verification ===')
         all_ok = True
@@ -1014,12 +916,10 @@ def handle_rhsa_mode(args, target_date):
                 else:
                     print(' ✗ Re-download failed')
         print('\nAll critical files downloaded successfully.' if all_ok else '\n⚠️ Some critical files have download issues.')
-
     nid = errata_id.replace(':', '-')
     write_tree_report(base_dir, base_dir / f'{nid}-tree.txt')
     if should_download:
         write_hash_reports(base_dir, base_dir / f'{nid}-md5sum.txt', base_dir / f'{nid}-sha256sum.txt')
-
     print(f'Output directory: {base_dir}')
     print(f'Matched packages: {len(selected)}')
     if args.n:
@@ -1030,8 +930,6 @@ def handle_rhsa_mode(args, target_date):
         print('Failed downloads:')
         for name in failures:
             print(f'  - {name}')
-
-
 def main():
     ap = argparse.ArgumentParser(description='Red Hat CVE VEX security report generator + RHSA downloader/report generator')
     ap.add_argument('-a', action='store_true', help='arch is aarch64(default:x86_64)')
@@ -1050,7 +948,6 @@ def main():
     ap.add_argument('--newline', choices=['auto', 'crlf', 'lf'], default='auto', help='report output newline: auto (RHSA=CRLF, CVE=LF/default), crlf, lf')
     ap.add_argument('RHSA', type=str, help='CVE identifier or RHSA identifier (e.g. CVE-2026-4786 or RHSA-2026:25217)')
     args = ap.parse_args()
-
     if args.date:
         try:
             target_date = datetime.strptime(args.date, '%Y-%m-%d')
@@ -1059,20 +956,16 @@ def main():
             sys.exit(1)
     else:
         target_date = datetime.now()
-
     if is_rhsa_id(args.RHSA):
         handle_rhsa_mode(args, target_date)
         return
-
     if not is_cve_id(args.RHSA):
         print('Error: This script handles CVE identifiers for report generation and RHSA identifiers for report/download mode.')
         sys.exit(2)
-
     cve_id = normalize_cve_id(args.RHSA)
     contacts = load_contacts(args.contacts or 'contacts.default.json')
     tpl_text = load_template(args.template or 'report_template.default-cve.txt')
     arch = 'aarch64' if args.a else 'x86_64'
-
     print(f'Fetching Red Hat CSAF VEX information for {cve_id}...')
     if args.cve_json:
         vex = load_json_file(args.cve_json)
@@ -1081,7 +974,6 @@ def main():
         vex = fetch_cve_vex(cve_id)
         write_to_json(f'{cve_id.lower()}-vex.json', vex)
         print(f'CVE VEX information saved to {cve_id.lower()}-vex.json')
-
     patch_records = collect_cve_patch_records(vex, arch=arch)
     if not patch_records:
         print('Warning: No displayable RHSA remediations were found for the requested architecture/rules.')
@@ -1096,7 +988,6 @@ def main():
         print('+--------------------------------------------------------------------------')
         print(build_cve_patch_table(patch_records))
         print('+--------------------------------------------------------------------------\n')
-
     info = build_cve_report_info(cve_id, vex)
     package_name = extract_cve_package_name(vex)
     report_name = resolve_report_number(cve_id, pick_report_map_path(args.advisory_list))
@@ -1106,7 +997,6 @@ def main():
         pkg_name_override=package_name,
         errata_display_id=cve_id,
     )
-
     Path(args.outdir).mkdir(parents=True, exist_ok=True)
     out = Path(args.outdir) / f'{report_name}.txt'
     used_enc, used_nl = write_report_file(out, report, is_cve_mode=True, encoding_mode=args.encoding, newline_mode=args.newline)
@@ -1117,7 +1007,5 @@ def main():
     else:
         print('Note: Failed to adjust report timestamp or issued date not available.')
     print(f'Security report generated: {out} with date {target_date.strftime("%Y-%m-%d")} [{used_enc}, {used_nl}]')
-
-
 if __name__ == '__main__':
     main()
