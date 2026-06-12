@@ -14,7 +14,7 @@ from string import Template
 from datetime import datetime, timezone
 import requests
 import hashlib
-VERSION = "25.1"
+VERSION = "25.2"
 SUPPORTED_RHEL_STREAM_PREFIXES = ("BASEOS-", "APPSTREAM-")
 def load_json_file(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -154,8 +154,21 @@ def is_target_cve_product_id(product_id, target_pkg=None, arch="x86_64", mode="a
     stream, component = product_id.split(":", 1)
     if is_excluded_cve_stream(stream) or not is_supported_rhel_stream(stream):
         return False
+
+    # For RHEL 8 minor streams, include source RPM product_ids in the normal
+    # architecture-specific match path.  Some RHEL 8 VEX entries only expose the
+    # representative package name (for example python3) as .src, while x86_64
+    # entries are subpackages such as python3-libs or platform-python.  Without
+    # this, v.8.x rows are dropped when other x86_64 rows are found.
+    is_rhel8_minor_stream = bool(re.search(r"-8\.\d+", stream))
+
     if mode in ("src_strict", "src_relaxed"):
         m = re.fullmatch(r"(?P<pkg>.+?)-\d+:.+\.src", component)
+    elif is_rhel8_minor_stream:
+        m = re.fullmatch(
+            r"(?P<pkg>.+?)-\d+:.+\.(?:" + re.escape(arch) + r"(?:.*)?|src)",
+            component,
+        )
     else:
         m = re.fullmatch(r"(?P<pkg>.+?)-\d+:.+\." + re.escape(arch) + r"(?:.*)?", component)
     if not m:
@@ -363,7 +376,6 @@ def generate_security_report(errata_id, info, report_num, contacts, tpl_text, ta
         "FOOTER_BLOCK": "",
         "APPLICABLE_SYSTEMS": "PRIMEQUEST, PRIMERGY",
         "CVES_SECTION": f"  - {errata_display_id or errata_id}\n          https://access.redhat.com/security/cve/{str(errata_display_id or errata_id).lower()}",
-        "CVES_LINKS": build_cves_links(info),
         "DATE": target_date.strftime("%Y.%m.%d"),
         "DATE_JP": target_date.strftime("%Y年%m月%d日"),
     }
@@ -569,61 +581,38 @@ def detect_applicable_systems(info):
     summary = (info['body'] or {}).get('summary', '')
     return 'PRIMERGY' if '10.0' in summary else 'PRIMEQUEST, PRIMERGY'
 def build_cves_links(info):
-    """Build ${CVES_LINKS} content from Red Hat API/VEX-style data.
-
-    cve14 treated body['cves'] as a whitespace-separated string.  cve25
-    accidentally iterated that string character-by-character, so no CVE IDs
-    were emitted.  This function accepts all common shapes:
-      - "CVE-... CVE-..." strings
-      - lists of strings or dicts
-      - nested reference/vulnerability dictionaries
-    """
     if not info or 'body' not in info:
         return ''
-
-    body = info.get('body') or {}
+    body = info['body']
+    raw_cves = (
+        body.get('cves') or
+        body.get('CVE') or
+        body.get('vulnerabilities') or
+        []
+    )
     cve_set = set()
-
-    def add_cves_from(value):
-        if value is None:
-            return
-        if isinstance(value, str):
-            for cve_id in re.findall(r'CVE-\d{4}-\d{4,}', value, flags=re.IGNORECASE):
-                cve_set.add(cve_id.upper())
-            return
-        if isinstance(value, dict):
-            # Prefer common key names, but also scan all nested values so that
-            # references such as href/title/summary are handled.
-            for key in ('cve', 'CVE', 'name', 'id', 'title', 'summary', 'href', 'url'):
-                if key in value:
-                    add_cves_from(value.get(key))
-            for nested in value.values():
-                if isinstance(nested, (dict, list, tuple, set)):
-                    add_cves_from(nested)
-            return
-        if isinstance(value, (list, tuple, set)):
-            for item in value:
-                add_cves_from(item)
-            return
-        add_cves_from(str(value))
-
-    # RHSA API commonly returns body['cves'] as a whitespace-separated string.
-    # VEX/CVE mode may have CVE IDs under references or vulnerabilities.
-    for key in ('cves', 'CVE', 'vulnerabilities', 'references'):
-        add_cves_from(body.get(key))
-
+    for cve in raw_cves:
+        if isinstance(cve, dict):
+            cve_id = cve.get('cve') or cve.get('name') or cve.get('id')
+        else:
+            cve_id = str(cve)
+        if not cve_id:
+            continue
+        cve_id = cve_id.strip().upper()
+        if not cve_id.startswith('CVE-'):
+            continue
+        cve_set.add(cve_id)
     def cve_sort_key(cve_id):
         m = re.fullmatch(r'CVE-(\d{4})-(\d+)', cve_id)
         if not m:
             return (0, 0, cve_id)
         return (int(m.group(1)), int(m.group(2)), cve_id)
-
+    sorted_cves = sorted(cve_set, key=cve_sort_key)
     lines = []
-    for cve_id in sorted(cve_set, key=cve_sort_key):
+    for cve_id in sorted_cves:
         lines.append(f'  - {cve_id}')
         lines.append(f'          https://access.redhat.com/security/cve/{cve_id.lower()}')
     return '\n'.join(lines)
-
 def generate_rhsa_report(errata_id, info, pkgs, report_num, contacts, tpl_text, target_date,
                          product_table_rows_override=None, footer_block_override=None,
                          pkg_name_override=None, errata_display_id=None):
